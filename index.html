@@ -153,63 +153,6 @@
           </div>
         </section>
 
-        <section class="card official-card">
-          <div class="official-source">
-            <div>
-              <p class="eyebrow">BOAT RACE OFFICIAL SIGNAL</p>
-              <h2>公式コンピューター予想</h2>
-            </div>
-            <a id="officialSourceLink" class="official-link" href="https://www.boatrace.jp/" target="_blank" rel="noreferrer">公式ページを確認 ↗</a>
-          </div>
-          <div class="official-content">
-            <div class="official-focus">
-              <small>公式評価の軸</small>
-              <div id="officialFocusBoats"></div>
-            </div>
-            <div class="official-stat">
-              <small>当サイトAIとの一致度</small>
-              <strong id="officialAgreement"></strong>
-              <span id="officialAgreementLabel"></span>
-            </div>
-            <div class="official-stat">
-              <small>総合予測への配分</small>
-              <strong>25%</strong>
-              <span>独立シグナルとして加点</span>
-            </div>
-            <p id="officialSummary" class="official-summary"></p>
-          </div>
-          <p class="official-note">出走選手・登録番号・級別・全国／当地勝率・平均ST・モーター成績・締切時刻はBOAT RACE公式出走表の値です。公式評価信号はコンピューター予想を参照する設計です。</p>
-        </section>
-
-        <section id="resultCard" class="card result-card" hidden>
-          <div class="card-heading">
-            <div>
-              <p class="eyebrow">OFFICIAL RESULT</p>
-              <h2>確定結果と予測比較</h2>
-            </div>
-            <span id="resultHitBadge" class="result-hit-badge"></span>
-          </div>
-          <div class="result-grid">
-            <div>
-              <small>確定着順</small>
-              <div id="officialResult" class="official-result"></div>
-            </div>
-            <div class="result-stat">
-              <small>3連単払戻</small>
-              <strong id="resultPayout"></strong>
-            </div>
-            <div class="result-stat">
-              <small>予測順位</small>
-              <strong id="resultPredictionRank"></strong>
-            </div>
-            <div class="result-stat">
-              <small>予測時点の評価</small>
-              <strong id="resultEvaluation"></strong>
-            </div>
-          </div>
-          <p id="resultComment" class="result-comment"></p>
-        </section>
-
         <section class="prediction-layout">
           <div class="card main-prediction">
             <div class="card-heading">
@@ -244,18 +187,51 @@
               <p class="ticket-note">鉄板は予測確率を優先。穴は最低確率を満たし、上位評価艇を含む買い目だけを抽出します。</p>
             </div>
 
-            <div class="card insight-card">
-              <div class="card-heading">
-                <div>
-                  <p class="eyebrow">AI INSIGHT</p>
-                  <h2>展開シナリオ</h2>
-                </div>
-                <span class="spark-icon">✦</span>
-              </div>
-              <p id="scenarioText" class="scenario-text"></p>
-              <div id="keyFactors" class="factor-list"></div>
-            </div>
           </div>
+        </section>
+
+        <section class="card racer-card">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">RACER ANALYSIS</p>
+              <h2>出走選手データ</h2>
+            </div>
+            <div class="legend"><span>AI評価</span><i></i><span>人気</span></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>艇</th>
+                  <th>選手</th>
+                  <th>級別</th>
+                  <th>全国勝率</th>
+                  <th>当地勝率</th>
+                  <th>モーター</th>
+                  <th>展示</th>
+                  <th>展示補正</th>
+                  <th>公式印</th>
+                  <th>AI評価</th>
+                  <th>人気</th>
+                  <th>AIひとこと分析</th>
+                </tr>
+              </thead>
+              <tbody id="racerTable"></tbody>
+            </table>
+          </div>
+          <p class="comment-disclaimer">「AIひとこと分析」は公開成績・展示・モーター・当地相性から作成した要約で、選手本人の発言ではありません。</p>
+        </section>
+
+        <section class="card insight-card">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">AI INSIGHT</p>
+              <h2>展開シナリオ</h2>
+            </div>
+            <span class="spark-icon">✦</span>
+          </div>
+          <p id="scenarioText" class="scenario-text"></p>
+          <div id="keyFactors" class="factor-list"></div>
         </section>
 
         <section id="history" class="card value-card premium-feature">
@@ -287,6 +263,34 @@
           </div>
           <p id="rankingDescription" class="section-description"></p>
           <div id="raceRankingList" class="race-ranking-list"></div>
+        </section>
+
+        <section class="card official-card">
+          <div class="official-source">
+            <div>
+              <p class="eyebrow">BOAT RACE OFFICIAL SIGNAL</p>
+              <h2>公式コンピューター予想</h2>
+            </div>
+            <a id="officialSourceLink" class="official-link" href="https://www.boatrace.jp/" target="_blank" rel="noreferrer">公式ページを確認 ↗</a>
+          </div>
+          <div class="official-content">
+            <div class="official-focus">
+              <small>公式評価の軸</small>
+              <div id="officialFocusBoats"></div>
+            </div>
+            <div class="official-stat">
+              <small>当サイトAIとの一致度</small>
+              <strong id="officialAgreement"></strong>
+              <span id="officialAgreementLabel"></span>
+            </div>
+            <div class="official-stat">
+              <small>総合予測への配分</small>
+              <strong>25%</strong>
+              <span>独立シグナルとして加点</span>
+            </div>
+            <p id="officialSummary" class="official-summary"></p>
+          </div>
+          <p class="official-note">出走選手・登録番号・級別・全国／当地勝率・平均ST・モーター成績・締切時刻はBOAT RACE公式出走表の値です。公式評価信号はコンピューター予想を参照する設計です。</p>
         </section>
 
         <section id="performance" class="card performance-card premium-feature">
@@ -327,36 +331,33 @@
           <div id="performanceRaceList" class="performance-race-list"></div>
         </section>
 
-        <section class="card racer-card">
+        <section id="resultCard" class="card result-card" hidden>
           <div class="card-heading">
             <div>
-              <p class="eyebrow">RACER ANALYSIS</p>
-              <h2>出走選手データ</h2>
+              <p class="eyebrow">OFFICIAL RESULT</p>
+              <h2>確定結果と予測比較</h2>
             </div>
-            <div class="legend"><span>AI評価</span><i></i><span>人気</span></div>
+            <span id="resultHitBadge" class="result-hit-badge"></span>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>艇</th>
-                  <th>選手</th>
-                  <th>級別</th>
-                  <th>全国勝率</th>
-                  <th>当地勝率</th>
-                  <th>モーター</th>
-                  <th>展示</th>
-                  <th>展示補正</th>
-                  <th>公式印</th>
-                  <th>AI評価</th>
-                  <th>人気</th>
-                  <th>AIひとこと分析</th>
-                </tr>
-              </thead>
-              <tbody id="racerTable"></tbody>
-            </table>
+          <div class="result-grid">
+            <div>
+              <small>確定着順</small>
+              <div id="officialResult" class="official-result"></div>
+            </div>
+            <div class="result-stat">
+              <small>3連単払戻</small>
+              <strong id="resultPayout"></strong>
+            </div>
+            <div class="result-stat">
+              <small>予測順位</small>
+              <strong id="resultPredictionRank"></strong>
+            </div>
+            <div class="result-stat">
+              <small>予測時点の評価</small>
+              <strong id="resultEvaluation"></strong>
+            </div>
           </div>
-          <p class="comment-disclaimer">「AIひとこと分析」は公開成績・展示・モーター・当地相性から作成した要約で、選手本人の発言ではありません。</p>
+          <p id="resultComment" class="result-comment"></p>
         </section>
 
         <section id="plans" class="plan-panel">
