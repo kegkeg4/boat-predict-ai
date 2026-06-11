@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260611-2">
+  <link rel="stylesheet" href="styles.css?v=20260611-3">
 </head>
 <body>
   <div class="app-shell">
@@ -100,30 +100,6 @@
         <b>番組確定済み</b>
         当日全レース終了後は、番組が確定した翌日分を前夜予測。展示公開後は直前データを加えて自動更新します。
       </div>
-
-      <section id="plans" class="plan-panel">
-        <div class="plan-copy">
-          <p class="eyebrow">FREE / PREMIUM</p>
-          <h2>無料で試して、深い分析はプレミアムへ</h2>
-          <p>無料では基本予測を確認。プレミアムでは全レース5点予測・展示後再計算・成績検証まで使える設計です。</p>
-        </div>
-        <div class="plan-cards">
-          <article class="plan-card free">
-            <span>FREE</span>
-            <strong>無料</strong>
-            <p>基本予測・注目レース・上位3点まで</p>
-          </article>
-          <article class="plan-card premium">
-            <span>PREMIUM</span>
-            <strong>月額 980円</strong>
-            <p>全レース5点予測・成績分析・展示後更新</p>
-          </article>
-        </div>
-        <div class="plan-actions" role="group" aria-label="表示プラン切り替え">
-          <button id="freePlanButton" class="plan-action active" type="button">無料表示</button>
-          <button id="premiumPlanButton" class="plan-action" type="button">プレミアム表示デモ</button>
-        </div>
-      </section>
 
       <section id="loadingState" class="loading-state" hidden>
         <div class="radar">
@@ -383,6 +359,30 @@
           <p class="comment-disclaimer">「AIひとこと分析」は公開成績・展示・モーター・当地相性から作成した要約で、選手本人の発言ではありません。</p>
         </section>
 
+        <section id="plans" class="plan-panel">
+          <div class="plan-copy">
+            <p class="eyebrow">FREE / PREMIUM</p>
+            <h2>無料で試して、深い分析はプレミアムへ</h2>
+            <p>予測画面を優先し、料金案内は確認したい時だけ見られる位置に移しました。</p>
+          </div>
+          <div class="plan-cards">
+            <article class="plan-card free">
+              <span>FREE</span>
+              <strong>無料</strong>
+              <p>基本予測・注目レース・上位3点まで</p>
+            </article>
+            <article class="plan-card premium">
+              <span>PREMIUM</span>
+              <strong>月額 980円</strong>
+              <p>全レース5点予測・成績分析・展示後更新</p>
+            </article>
+          </div>
+          <div class="plan-actions" role="group" aria-label="表示プラン切り替え">
+            <button id="freePlanButton" class="plan-action active" type="button">無料表示</button>
+            <button id="premiumPlanButton" class="plan-action" type="button">プレミアム表示デモ</button>
+          </div>
+        </section>
+
         <footer>
           <p>予測は的中を保証するものではありません。投票はご自身の判断と責任で行ってください。</p>
           <p>BOAT PREDICT AI / PROTOTYPE</p>
@@ -391,6 +391,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260611-5"></script>
+  <script src="app.js?v=20260611-6"></script>
 </body>
 </html>
