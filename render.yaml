@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: boat-predict-ai
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 server.py
+    healthCheckPath: /api/warmup
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: BOAT_STARTUP_WARMUP
+        value: "1"

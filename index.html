@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="天候・選手・モーター・水面相性から競艇レースを分析するAI予測デモ">
+  <title>BOAT PREDICT AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=20260611-2">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#" aria-label="BOAT PREDICT AI ホーム">
+        <span class="brand-mark">
+          <svg viewBox="0 0 40 40" aria-hidden="true">
+            <path d="M8 27c5-2 8-7 12-15 3 7 6 12 12 15-7 2-17 2-24 0Z"/>
+            <path d="M6 31c8 3 20 3 28 0"/>
+          </svg>
+        </span>
+        <span>BOAT<br><b>PREDICT AI</b></span>
+      </a>
+
+      <nav class="main-nav" aria-label="メインナビゲーション">
+        <a class="nav-item active" href="#">
+          <span class="nav-icon">⌁</span>
+          AI予測
+        </a>
+        <a class="nav-item" href="#history">
+          <span class="nav-icon">◷</span>
+          買い目分析
+        </a>
+        <a class="nav-item" href="#raceRanking">
+          <span class="nav-icon">▥</span>
+          注目レース
+        </a>
+        <a class="nav-item" href="#performance">
+          <span class="nav-icon">✓</span>
+          予測成績
+        </a>
+        <a class="nav-item" href="#plans">
+          <span class="nav-icon">¥</span>
+          料金プラン
+        </a>
+      </nav>
+
+      <div class="model-card">
+        <div class="model-head">
+          <span class="pulse-dot"></span>
+          AI MODEL
+          <span>v0.9 DEMO</span>
+        </div>
+        <p>8カテゴリ・42項目からレース展開を分析</p>
+        <div class="model-meter"><span></span></div>
+        <small>デモモデル稼働中</small>
+      </div>
+
+      <p class="sidebar-note">20歳未満の方は投票券を購入できません。無理のない範囲でお楽しみください。</p>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">RACE INTELLIGENCE</p>
+          <h1>AIレース予測</h1>
+        </div>
+        <div class="top-actions">
+          <button class="icon-button" aria-label="通知">♢</button>
+          <div id="warmupStatus" class="status-chip"><span></span>データ更新済み</div>
+        </div>
+      </header>
+
+      <section class="selection-panel">
+        <div class="field">
+          <label for="venue">会場</label>
+          <div class="select-wrap">
+            <select id="venue"></select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="raceDate">開催日</label>
+          <div class="date-wrap">
+            <input id="raceDate" type="date">
+          </div>
+          <div id="recentDates" class="recent-dates" aria-label="最近の開催日"></div>
+        </div>
+        <div class="field race-field">
+          <span class="field-label">レース <small>終了日は3連単着順を表示</small></span>
+          <div id="raceSelector" class="race-selector" role="group" aria-label="レース選択"></div>
+        </div>
+        <button id="predictButton" class="predict-button">
+          <span class="button-spark">✦</span>
+          AI予測を実行
+        </button>
+      </section>
+
+      <div class="demo-notice">
+        <b>番組確定済み</b>
+        当日全レース終了後は、番組が確定した翌日分を前夜予測。展示公開後は直前データを加えて自動更新します。
+      </div>
+
+      <section id="plans" class="plan-panel">
+        <div class="plan-copy">
+          <p class="eyebrow">FREE / PREMIUM</p>
+          <h2>無料で試して、深い分析はプレミアムへ</h2>
+          <p>無料では基本予測を確認。プレミアムでは全レース5点予測・展示後再計算・成績検証まで使える設計です。</p>
+        </div>
+        <div class="plan-cards">
+          <article class="plan-card free">
+            <span>FREE</span>
+            <strong>無料</strong>
+            <p>基本予測・注目レース・上位3点まで</p>
+          </article>
+          <article class="plan-card premium">
+            <span>PREMIUM</span>
+            <strong>月額 980円</strong>
+            <p>全レース5点予測・成績分析・展示後更新</p>
+          </article>
+        </div>
+        <div class="plan-actions" role="group" aria-label="表示プラン切り替え">
+          <button id="freePlanButton" class="plan-action active" type="button">無料表示</button>
+          <button id="premiumPlanButton" class="plan-action" type="button">プレミアム表示デモ</button>
+        </div>
+      </section>
+
+      <section id="loadingState" class="loading-state" hidden>
+        <div class="radar">
+          <span></span>
+          <i></i>
+        </div>
+        <h2>レースデータを解析中</h2>
+        <p id="loadingMessage">選手コンディションを確認しています...</p>
+        <div class="loading-bar"><span></span></div>
+      </section>
+
+      <section id="unavailableState" class="unavailable-state" hidden>
+        <strong>公式出走表を未取得です</strong>
+        <p>選手や成績を推測で表示せず、公式番組を取得できた開催だけ予測を表示します。</p>
+        <a id="officialProgramLink" href="https://www.boatrace.jp/" target="_blank" rel="noreferrer">BOAT RACE公式で確認 ↗</a>
+      </section>
+
+      <div id="dashboard">
+        <section class="race-summary">
+          <div>
+            <p id="summaryMeta" class="eyebrow"></p>
+            <div class="race-title-line">
+              <h2 id="summaryTitle"></h2>
+              <p id="summaryTime" class="race-time"></p>
+              <span id="raceTypeBadge" class="race-type-badge"></span>
+            </div>
+            <div id="predictionPhase" class="prediction-phase"></div>
+            <p id="raceTypeDescription" class="race-type-description"></p>
+            <div class="race-tendency">
+              <span class="tendency-chip solid">堅め度 <b id="currentSolidScore"></b></span>
+              <span class="tendency-chip upset">穴気配度 <b id="currentUpsetScore"></b></span>
+            </div>
+          </div>
+          <div class="condition-grid">
+            <div class="condition">
+              <span class="condition-icon weather-icon">☀</span>
+              <div><small>天候</small><strong id="weatherValue"></strong></div>
+            </div>
+            <div class="condition">
+              <span class="condition-icon">↗</span>
+              <div><small>風向・風速</small><strong id="windValue"></strong></div>
+            </div>
+            <div class="condition">
+              <span class="condition-icon">≈</span>
+              <div><small>波高</small><strong id="waveValue"></strong></div>
+            </div>
+            <div class="condition">
+              <span class="condition-icon">◎</span>
+              <div><small>水面傾向</small><strong id="waterValue"></strong></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card official-card">
+          <div class="official-source">
+            <div>
+              <p class="eyebrow">BOAT RACE OFFICIAL SIGNAL</p>
+              <h2>公式コンピューター予想</h2>
+            </div>
+            <a id="officialSourceLink" class="official-link" href="https://www.boatrace.jp/" target="_blank" rel="noreferrer">公式ページを確認 ↗</a>
+          </div>
+          <div class="official-content">
+            <div class="official-focus">
+              <small>公式評価の軸</small>
+              <div id="officialFocusBoats"></div>
+            </div>
+            <div class="official-stat">
+              <small>当サイトAIとの一致度</small>
+              <strong id="officialAgreement"></strong>
+              <span id="officialAgreementLabel"></span>
+            </div>
+            <div class="official-stat">
+              <small>総合予測への配分</small>
+              <strong>25%</strong>
+              <span>独立シグナルとして加点</span>
+            </div>
+            <p id="officialSummary" class="official-summary"></p>
+          </div>
+          <p class="official-note">出走選手・登録番号・級別・全国／当地勝率・平均ST・モーター成績・締切時刻はBOAT RACE公式出走表の値です。公式評価信号はコンピューター予想を参照する設計です。</p>
+        </section>
+
+        <section id="resultCard" class="card result-card" hidden>
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">OFFICIAL RESULT</p>
+              <h2>確定結果と予測比較</h2>
+            </div>
+            <span id="resultHitBadge" class="result-hit-badge"></span>
+          </div>
+          <div class="result-grid">
+            <div>
+              <small>確定着順</small>
+              <div id="officialResult" class="official-result"></div>
+            </div>
+            <div class="result-stat">
+              <small>3連単払戻</small>
+              <strong id="resultPayout"></strong>
+            </div>
+            <div class="result-stat">
+              <small>予測順位</small>
+              <strong id="resultPredictionRank"></strong>
+            </div>
+            <div class="result-stat">
+              <small>予測時点の評価</small>
+              <strong id="resultEvaluation"></strong>
+            </div>
+          </div>
+          <p id="resultComment" class="result-comment"></p>
+        </section>
+
+        <section class="prediction-layout">
+          <div class="card main-prediction">
+            <div class="card-heading">
+              <div>
+                <p class="eyebrow">AI PREDICTION</p>
+                <h2 id="predictionHeading">着順予測</h2>
+              </div>
+              <div id="confidenceBadge" class="confidence-badge"></div>
+            </div>
+            <div id="predictionRows" class="prediction-rows"></div>
+          </div>
+
+          <div class="right-stack">
+            <div class="card ticket-card">
+              <div class="card-heading">
+                <div>
+                  <p class="eyebrow">RECOMMENDED</p>
+                  <h2 id="ticketHeading">鉄板・穴予測</h2>
+                </div>
+                <span class="ticket-type">3連単</span>
+              </div>
+              <div class="ticket-section solid-ticket-section">
+                <div class="ticket-section-title"><b>鉄板予測</b><span>確率・公式評価を優先</span></div>
+                <div id="solidTicket" class="main-ticket"></div>
+                <div id="solidSubTickets" class="sub-tickets"></div>
+              </div>
+              <div class="ticket-section upset-ticket-section">
+                <div class="ticket-section-title"><b>穴予測</b><span>無理な大穴は除外</span></div>
+                <div id="upsetTicket" class="main-ticket upset-main-ticket"></div>
+                <div id="upsetSubTickets" class="sub-tickets"></div>
+              </div>
+              <p class="ticket-note">鉄板は予測確率を優先。穴は最低確率を満たし、上位評価艇を含む買い目だけを抽出します。</p>
+            </div>
+
+            <div class="card insight-card">
+              <div class="card-heading">
+                <div>
+                  <p class="eyebrow">AI INSIGHT</p>
+                  <h2>展開シナリオ</h2>
+                </div>
+                <span class="spark-icon">✦</span>
+              </div>
+              <p id="scenarioText" class="scenario-text"></p>
+              <div id="keyFactors" class="factor-list"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="history" class="card value-card premium-feature">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">VALUE ANALYSIS</p>
+              <h2>3連単 期待値ランキング</h2>
+            </div>
+            <div class="value-legend">
+              <span>予測確率 × 公式オッズ</span>
+              <b>上位5点</b>
+            </div>
+          </div>
+          <p class="section-description">的中確率だけでなく、取得できた公式3連単オッズとのバランスから買い目の妙味を比較します。</p>
+          <div id="valuePicks" class="value-picks"></div>
+          <p class="data-caution">無料表示では上位3点まで。プレミアムでは上位5点・公式オッズ反映・展示後再計算を開放します。</p>
+        </section>
+
+        <section id="raceRanking" class="card ranking-card">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">RACE PICKUP</p>
+              <h2>この会場の注目レース</h2>
+            </div>
+            <div class="ranking-tabs" role="group" aria-label="注目レース種別">
+              <button class="ranking-tab active" type="button" data-ranking="solid">堅め</button>
+              <button class="ranking-tab" type="button" data-ranking="upset">穴気配</button>
+            </div>
+          </div>
+          <p id="rankingDescription" class="section-description"></p>
+          <div id="raceRankingList" class="race-ranking-list"></div>
+        </section>
+
+        <section id="performance" class="card performance-card premium-feature">
+          <div class="daily-performance-head">
+            <div>
+              <p class="eyebrow">TODAY RESULT</p>
+              <h2>本日の予測成績</h2>
+            </div>
+            <span id="dailyPerformanceStatus">集計中</span>
+          </div>
+          <div class="learning-note">
+            <b>学習方針</b>
+            公式結果と5点予測を毎レース比較し、外れ方を蓄積します。勝率改善はこの履歴から「会場・風・波・展示・公式予想・コース」の重みを調整していく設計にします。
+          </div>
+          <div class="daily-performance-grid">
+            <div class="daily-stat">
+              <small>予測対象</small>
+              <strong id="dailyPredictedCount">0</strong>
+              <span>レース</span>
+            </div>
+            <div class="daily-stat">
+              <small>判定済み</small>
+              <strong id="dailyJudgedCount">0</strong>
+              <span>レース</span>
+            </div>
+            <div class="daily-stat hit">
+              <small>5点内的中</small>
+              <strong id="dailyExactHits">0</strong>
+              <span id="dailyExactRate">0%</span>
+            </div>
+            <div class="daily-stat axis">
+              <small>1着的中</small>
+              <strong id="dailyLeaderHits">0</strong>
+              <span id="dailyLeaderRate">0%</span>
+            </div>
+          </div>
+          <p id="dailyPerformanceNote" class="daily-performance-note"></p>
+          <div id="performanceRaceList" class="performance-race-list"></div>
+        </section>
+
+        <section class="card racer-card">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">RACER ANALYSIS</p>
+              <h2>出走選手データ</h2>
+            </div>
+            <div class="legend"><span>AI評価</span><i></i><span>人気</span></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>艇</th>
+                  <th>選手</th>
+                  <th>級別</th>
+                  <th>全国勝率</th>
+                  <th>当地勝率</th>
+                  <th>モーター</th>
+                  <th>展示</th>
+                  <th>展示補正</th>
+                  <th>公式印</th>
+                  <th>AI評価</th>
+                  <th>人気</th>
+                  <th>AIひとこと分析</th>
+                </tr>
+              </thead>
+              <tbody id="racerTable"></tbody>
+            </table>
+          </div>
+          <p class="comment-disclaimer">「AIひとこと分析」は公開成績・展示・モーター・当地相性から作成した要約で、選手本人の発言ではありません。</p>
+        </section>
+
+        <footer>
+          <p>予測は的中を保証するものではありません。投票はご自身の判断と責任で行ってください。</p>
+          <p>BOAT PREDICT AI / PROTOTYPE</p>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <script src="app.js?v=20260611-5"></script>
+</body>
+</html>
