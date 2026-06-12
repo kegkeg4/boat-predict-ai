@@ -1528,14 +1528,21 @@ function renderDailyPerformance() {
   document.querySelector("#simulatedTotalSummary").textContent =
     `全体 ${formatSignedYen(totals.simulatedNet)} / 回収率 ${recoveryRate}%`;
   document.querySelector("#simulatedTotalSummary").className = totals.simulatedNet >= 0 ? "plus" : "minus";
-  document.querySelector("#strategyProfitGrid").innerHTML = Object.values(totals.strategy).map((strategy) => {
+  document.querySelector("#strategyProfitGrid").innerHTML = Object.entries(totals.strategy).map(([key, strategy]) => {
     const rate = strategy.stake ? Math.round(strategy.return / strategy.stake * 100) : 0;
     return `
-      <article class="${strategy.net >= 0 ? "plus" : "minus"}">
-        <small>${strategy.label}${strategy.count}点</small>
+      <article class="${key} ${strategy.net >= 0 ? "plus" : "minus"}">
+        <div class="strategy-profit-title">
+          <small>${strategy.label}${strategy.count}点</small>
+          <span>${strategy.label}だけ買った場合</span>
+        </div>
         <strong>${formatSignedYen(strategy.net)}</strong>
-        <span>${strategy.label}だけ買った場合</span>
-        <em>投資 ${formatYen(strategy.stake)} / 回収 ${formatYen(strategy.return)} / 回収率 ${rate}% / 的中 ${strategy.hits}回</em>
+        <div class="strategy-profit-metrics">
+          <span><small>投資</small><b>${formatYen(strategy.stake)}</b></span>
+          <span><small>回収</small><b>${formatYen(strategy.return)}</b></span>
+          <span><small>回収率</small><b>${rate}%</b></span>
+          <span><small>的中</small><b>${strategy.hits}回</b></span>
+        </div>
       </article>
     `;
   }).join("");

@@ -486,19 +486,26 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .performance-picks { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
 .performance-picks span { padding: 4px 6px; border-radius: 5px; color: #52677c; background: #eef3f8; font-size: 9px; font-weight: 700; }
 .performance-picks span.matched { color: #fff; background: #10a979; }
-.simulated-profit-card { margin-top: 16px; padding: 16px; border: 1px solid #d9e5f0; border-radius: 11px; background: linear-gradient(135deg, #fff, #f5faff); }
+.simulated-profit-card { margin-top: 16px; padding: 18px; border: 1px solid #d9e5f0; border-radius: 13px; background: linear-gradient(135deg, #fff, #f5faff); }
 .simulated-profit-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
-.simulated-profit-head h3 { margin: 0; font-size: 15px; letter-spacing: -.02em; }
-.simulated-profit-head > span { padding: 6px 9px; border-radius: 7px; background: #eef4fb; font-size: 10px; font-weight: 900; white-space: nowrap; }
+.simulated-profit-head h3 { margin: 0; font-size: 16px; letter-spacing: -.02em; }
+.simulated-profit-head > span { padding: 7px 10px; border-radius: 999px; background: #eef4fb; font-size: 10px; font-weight: 900; white-space: nowrap; }
 .simulated-profit-head > span.plus { color: #0a9a70; background: #e6f8f1; }
 .simulated-profit-head > span.minus { color: #cf4053; background: #fff0f2; }
-.simulated-profit-note { margin: 10px 0 0; color: #7f8e9e; font-size: 9px; line-height: 1.5; }
-.strategy-profit-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
-.strategy-profit-grid article { padding: 11px; border: 1px solid #e4ebf2; border-radius: 8px; background: #fff; }
-.strategy-profit-grid small { display: block; margin-bottom: 5px; color: #8b99a8; font-size: 8px; font-weight: 800; }
-.strategy-profit-grid strong { display: block; font-size: 22px; line-height: 1; }
-.strategy-profit-grid span { display: block; margin-top: 5px; color: #7f8e9e; font-size: 8px; line-height: 1.45; }
-.strategy-profit-grid em { display: block; margin-top: 7px; color: #607083; font-size: 8px; font-style: normal; line-height: 1.45; }
+.simulated-profit-note { margin: 12px 0 0; color: #7f8e9e; font-size: 9px; line-height: 1.5; }
+.strategy-profit-grid { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 10px; margin-top: 14px; }
+.strategy-profit-grid article { padding: 13px; border: 1px solid #e4ebf2; border-radius: 11px; background: #fff; box-shadow: 0 8px 20px rgba(19, 37, 58, .04); }
+.strategy-profit-grid article.honmei { border-color: #cfe3ff; }
+.strategy-profit-grid article.nerai { border-color: #d8e8df; }
+.strategy-profit-grid article.ana { border-color: #f0d8df; }
+.strategy-profit-title { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.strategy-profit-title small { color: #7d8c9c; font-size: 9px; font-weight: 900; letter-spacing: .08em; }
+.strategy-profit-title span { color: #8b99a8; font-size: 8px; font-weight: 700; white-space: nowrap; }
+.strategy-profit-grid strong { display: block; margin-top: 10px; font-size: 26px; line-height: 1; letter-spacing: -.03em; }
+.strategy-profit-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 12px; }
+.strategy-profit-metrics span { display: grid; gap: 2px; min-width: 0; padding: 7px; border-radius: 8px; background: #f5f8fb; }
+.strategy-profit-metrics small { color: #97a4b3; font-size: 7px; font-weight: 900; letter-spacing: .06em; }
+.strategy-profit-metrics b { color: #33485d; font-size: 10px; line-height: 1.2; word-break: keep-all; }
 .strategy-profit-grid article.plus strong { color: #0a9a70; }
 .strategy-profit-grid article.minus strong { color: #cf4053; }
 
