@@ -1324,34 +1324,62 @@ function renderDailyPerformance() {
   renderPerformanceRaceList(totals.rows);
 }
 
+async function runWithConcurrency(items, limit, worker, afterEach) {
+  const queue = [...items];
+  const runners = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+    while (queue.length) {
+      const item = queue.shift();
+      await worker(item);
+      afterEach?.(item);
+    }
+  });
+  await Promise.all(runners);
+}
+
 async function refreshDailyPerformanceResults(requestId) {
   const allRaces = Array.from({ length: 12 }, (_, index) => index + 1);
-  for (let index = 0; index < allRaces.length; index += 2) {
-    const batch = allRaces.slice(index, index + 2);
-    await Promise.all(batch.map((race) =>
-      loadOfficialProgramForRace(race, activeProgramController.signal).catch((error) => {
+  renderDailyPerformance();
+
+  const key = getProgramKey();
+  const missingProgramRaces = allRaces.filter((race) => {
+    const cachedRace = dynamicPrograms[key]?.races.find((item) => item.race === race);
+    return !cachedRace?.detailed;
+  });
+  await runWithConcurrency(
+    missingProgramRaces,
+    5,
+    async (race) => {
+      await loadOfficialProgramForRace(race, activeProgramController.signal).catch((error) => {
         if (error.name !== "AbortError") console.warn(error);
         return null;
-      })
-    ));
-    if (requestId !== predictionRequestId) return;
-    renderDailyPerformance();
-  }
+      });
+    },
+    () => {
+      if (requestId === predictionRequestId) renderDailyPerformance();
+    }
+  );
   if (requestId !== predictionRequestId) return;
   renderDailyPerformance();
 
   const completedRaces = allRaces
-    .filter((race) => isRaceCompleted(race) && getPrimaryPredictionForRace(race));
+    .filter((race) => isRaceCompleted(race) && getPrimaryPredictionForRace(race) && !getVerifiedResult(race));
   if (!completedRaces.length) {
     renderDailyPerformance();
     return;
   }
-  await Promise.all(completedRaces.map((race) =>
-    loadOfficialResultForRace(race, activeProgramController.signal).catch((error) => {
+  await runWithConcurrency(
+    completedRaces,
+    6,
+    async (race) => {
+      await loadOfficialResultForRace(race, activeProgramController.signal).catch((error) => {
       if (error.name !== "AbortError") console.warn(error);
       return null;
-    })
-  ));
+      });
+    },
+    () => {
+      if (requestId === predictionRequestId) renderDailyPerformance();
+    }
+  );
   if (requestId !== predictionRequestId) return;
   updateRaceButtonStates();
   renderDailyPerformance();
@@ -1367,7 +1395,7 @@ function scheduleDailyPerformanceRefresh(requestId) {
     if (requestId === predictionRequestId) {
       refreshDailyPerformanceResults(requestId);
     }
-  }, 900);
+  }, 120);
 }
 
 async function runPrediction(withLoading = true) {
