@@ -458,6 +458,11 @@ function boatBadge(number, small = false) {
 }
 
 function buildRacerComment(racer) {
+  if (Number.isFinite(racer.weatherImpact) && Math.abs(racer.weatherImpact) >= 1.8) {
+    return racer.weatherImpact > 0
+      ? `天候・風・波の水面補正がプラス。${racer.weatherNote || "展開条件が向く可能性があります。"}`
+      : `天候・風・波の水面補正がマイナス。${racer.weatherNote || "水面対応が鍵になります。"}`;
+  }
   if (racer.exhibitionAvailable && racer.exhibition <= 6.70 && racer.motor >= 40) {
     return "展示気配とモーターが良好。スタートが決まれば上位争い。";
   }
@@ -480,6 +485,42 @@ function buildRacerComment(racer) {
     return "展示タイムはやや重め。直前気配の上積みを確認したい。";
   }
   return "総合力は拮抗。展開とスタート次第で着順が動きそう。";
+}
+
+function calculateWeatherImpact(boat, wind, wave, direction, weatherLabel) {
+  if (!Number.isFinite(wind) && !Number.isFinite(wave) && !weatherLabel) {
+    return { score: 0, note: "" };
+  }
+  let score = 0;
+  const notes = [];
+  if (Number.isFinite(wind)) {
+    if (wind >= 5) {
+      const penalty = (wind - 4) * (boat >= 4 ? 1.7 : boat === 1 ? .35 : .8);
+      score -= penalty;
+      notes.push(boat >= 4 ? "強風で外枠のターン流れを警戒" : "強風でも内寄りは相対的に安定");
+    } else if (wind <= 2 && boat <= 2) {
+      score += .35;
+      notes.push("風が弱く内枠の安定感を評価");
+    }
+    if (direction?.includes("追")) {
+      score += boat >= 3 ? .6 : -.15;
+      notes.push(boat >= 3 ? "追い風でダッシュ勢の伸びを加点" : "追い風でインの起こしに注意");
+    }
+    if (direction?.includes("向")) {
+      score += boat === 1 ? .55 : boat >= 4 ? -.45 : .05;
+      notes.push(boat === 1 ? "向かい風でインの先マイを加点" : "向かい風で外の伸びを慎重評価");
+    }
+  }
+  if (Number.isFinite(wave) && wave >= 3) {
+    const penalty = (wave - 2) * (boat >= 4 ? .75 : boat === 1 ? .2 : .4);
+    score -= penalty;
+    notes.push(boat >= 4 ? "波高で外枠の旋回ロスを警戒" : "波高でも内寄りは相対的に安定");
+  }
+  if (weatherLabel?.includes("雨")) {
+    score += boat <= 2 ? .25 : -.25;
+    notes.push(boat <= 2 ? "雨水面で内寄りの安定感を評価" : "雨水面で外の握り込みを慎重評価");
+  }
+  return { score: clamp(score, -5, 3), note: notes[0] || "" };
 }
 
 function permutations(items, length) {
@@ -629,6 +670,26 @@ async function loadOfficialResult(signal) {
   return loadOfficialResultForRace(selectedRace, signal);
 }
 
+function mergeResultWeather(race, weather) {
+  if (!weather?.available) return;
+  const key = getRaceSignalKey(race);
+  const current = dynamicRaceSignals[key] || {
+    date: dateInput.value,
+    jcd: String(Number(venueSelect.value) + 1).padStart(2, "0"),
+    race,
+    expect: { available: false },
+    beforeinfo: { available: false, racers: {}, weather: { available: false } },
+    odds: { available: false, odds: {}, firstPopularity: [] }
+  };
+  dynamicRaceSignals[key] = {
+    ...current,
+    beforeinfo: {
+      ...(current.beforeinfo || {}),
+      weather,
+    }
+  };
+}
+
 async function loadOfficialResultForRace(race, signal) {
   if (!isRaceCompleted(race)) return null;
   const key = `${getProgramKey()}-${race}`;
@@ -646,6 +707,7 @@ async function loadOfficialResultForRace(race, signal) {
       if (!response.ok) throw new Error(`公式結果取得エラー: ${response.status}`);
       const payload = await response.json();
       if (payload.error) throw new Error(payload.error);
+      mergeResultWeather(race, payload.weather);
       if (payload.available && isValidOfficialResult(payload.result)) {
         dynamicResults[key] = payload.result;
         delete resultUnavailableCache[key];
@@ -699,12 +761,7 @@ function buildRaceData(race = selectedRace) {
     const condition = null;
     const start = officialRacer.start ?? 0.25;
     const courseBase = [26, 17, 13, 10, 7, 5][boat - 1];
-    const windPenalty = Number.isFinite(wind) && wind >= 5
-      ? (wind - 4) * (boat >= 4 ? 1.4 : .45)
-      : 0;
-    const wavePenalty = Number.isFinite(wave) && wave >= 5
-      ? (wave - 4) * (boat >= 4 ? .7 : .2)
-      : 0;
+    const weatherImpact = calculateWeatherImpact(boat, wind, wave, direction, weather.label);
     const localBoost = (local - national) * 3.2 * venue.home;
     const gradeBoost = grade === "A1" ? 7 : grade === "A2" ? 3 : grade === "B2" ? -2 : 0;
     const baseModelScore = courseBase
@@ -714,8 +771,7 @@ function buildRaceData(race = selectedRace) {
       + gradeBoost
       + localBoost
       + (0.18 - start) * 26
-      - windPenalty
-      - wavePenalty;
+      + weatherImpact.score;
     const exhibitionImpact = phase.exhibitionAvailable
       ? clamp((6.78 - exhibition) * 48, -6, 7)
       : 0;
@@ -739,6 +795,8 @@ function buildRaceData(race = selectedRace) {
       exhibition,
       exhibitionAvailable: phase.exhibitionAvailable,
       exhibitionImpact,
+      weatherImpact: weatherImpact.score,
+      weatherNote: weatherImpact.note,
       tilt: live.tilt,
       parts: live.parts,
       condition,
@@ -936,6 +994,9 @@ function renderRace(data) {
     `${first.boat}号艇 AI評価 ${first.aiScore}`,
     `公式本命 ${data.officialOrder[0].boat}号艇`,
     `モーター上位 ${[...racers].sort((a,b) => b.motor - a.motor)[0].boat}号艇`,
+    Number.isFinite(first.weatherImpact) && Math.abs(first.weatherImpact) >= .1
+      ? `水面補正 ${first.weatherImpact >= 0 ? "+" : ""}${first.weatherImpact.toFixed(1)}`
+      : "水面補正 影響小",
     phase.exhibitionAvailable ? `展示反映 ${first.exhibition.toFixed(2)}` : "展示公開後に再計算",
     Number.isFinite(wind) ? `公式風 ${direction || ""}${wind.toFixed(0)}m` : "風未取得",
     Number.isFinite(wave) ? `公式波高 ${wave.toFixed(0)}cm` : "波未取得",
@@ -958,6 +1019,7 @@ function renderRace(data) {
       <td>${racer.motor.toFixed(1)}%</td>
       <td>${racer.exhibitionAvailable ? racer.exhibition.toFixed(2) : '<span class="exhibition-pending">未公開</span>'}</td>
       <td><span class="exhibition-impact ${racer.exhibitionImpact > 1 ? "up" : racer.exhibitionImpact < -1 ? "down" : "flat"}">${racer.exhibitionAvailable ? `${racer.exhibitionImpact >= 0 ? "+" : ""}${racer.exhibitionImpact.toFixed(1)}` : "対象外"}</span></td>
+      <td><span class="exhibition-impact ${racer.weatherImpact > .8 ? "up" : racer.weatherImpact < -.8 ? "down" : "flat"}">${racer.weatherImpact >= 0 ? "+" : ""}${racer.weatherImpact.toFixed(1)}</span></td>
       <td><span class="official-mark ${["main", "second", "third", "fourth"][racer.officialRank - 1] || ""}">${racer.officialMark || "―"}</span></td>
       <td class="ai-score">${racer.aiScore}</td>
       <td>
@@ -1665,6 +1727,12 @@ async function refreshOfficialResult(data, requestId) {
   try {
     await loadOfficialResult(activeProgramController.signal);
     if (requestId !== predictionRequestId) return;
+    const updatedData = buildRaceData();
+    if (updatedData) {
+      currentData = updatedData;
+      renderRace(updatedData);
+      data = updatedData;
+    }
     updateRaceButtonStates();
     renderOfficialResult(data);
   } catch (error) {

@@ -361,15 +361,21 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .ticket-section-title b { font-size: 11px; }
 .ticket-section-title span { color: #95a3b1; font-size: 8px; }
 .solid-ticket-section .ticket-section-title b { color: #0877f9; }
+.aim-ticket-section .ticket-section-title b { color: #9a6a00; }
 .upset-ticket-section .ticket-section-title b { color: #dc5262; }
 .main-ticket { display: flex; align-items: center; gap: 9px; margin-top: 17px; padding: 14px; border-radius: 9px; background: #071f37; }
 .ticket-section .main-ticket { margin-top: 0; }
+.aim-main-ticket { background: linear-gradient(120deg, #332a12, #182d3f); }
 .upset-main-ticket { background: linear-gradient(120deg, #351b2b, #18253a); }
 .ticket-label { margin-right: auto; color: #829cb3; font-size: 9px; }
+.ticket-meta { margin-left: auto; color: #9db2c5; font-size: 8px; font-weight: 800; white-space: nowrap; }
 .ticket-boat { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 5px; font-size: 13px; font-weight: 800; }
 .ticket-arrow { color: #567087; font-size: 11px; }
 .sub-tickets { display: flex; gap: 7px; margin-top: 9px; }
-.sub-ticket { flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 8px; border: 1px solid var(--line); border-radius: 7px; font-size: 11px; font-weight: 700; }
+.sub-ticket { flex: 1; display: grid; justify-items: center; gap: 3px; padding: 8px; border: 1px solid var(--line); border-radius: 7px; font-size: 11px; font-weight: 700; }
+.sub-ticket-combo { display: flex; align-items: center; justify-content: center; gap: 5px; }
+.sub-ticket-combo i { color: #91a0af; font-style: normal; }
+.sub-ticket small { color: #8e9cac; font-size: 7px; white-space: nowrap; }
 .sub-ticket.locked { color: #8796a6; background: #f2f5f8; border-style: dashed; }
 .ticket-note { margin: 11px 0 0; color: #9aa7b4; font-size: 9px; line-height: 1.5; }
 .spark-icon { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: linear-gradient(135deg, #1688ff, #04c2d6); }
@@ -483,14 +489,18 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .simulated-profit-card { margin-top: 16px; padding: 16px; border: 1px solid #d9e5f0; border-radius: 11px; background: linear-gradient(135deg, #fff, #f5faff); }
 .simulated-profit-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
 .simulated-profit-head h3 { margin: 0; font-size: 15px; letter-spacing: -.02em; }
-.simulated-profit-head > strong { font-size: 24px; line-height: 1; white-space: nowrap; }
-.simulated-profit-head > strong.plus { color: #0a9a70; }
-.simulated-profit-head > strong.minus { color: #cf4053; }
-.simulated-profit-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 13px; }
-.simulated-profit-grid div { padding: 11px; border: 1px solid #e4ebf2; border-radius: 8px; background: #fff; }
-.simulated-profit-grid small { display: block; margin-bottom: 5px; color: #8b99a8; font-size: 8px; font-weight: 800; }
-.simulated-profit-grid b { font-size: 17px; }
+.simulated-profit-head > span { padding: 6px 9px; border-radius: 7px; background: #eef4fb; font-size: 10px; font-weight: 900; white-space: nowrap; }
+.simulated-profit-head > span.plus { color: #0a9a70; background: #e6f8f1; }
+.simulated-profit-head > span.minus { color: #cf4053; background: #fff0f2; }
 .simulated-profit-note { margin: 10px 0 0; color: #7f8e9e; font-size: 9px; line-height: 1.5; }
+.strategy-profit-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.strategy-profit-grid article { padding: 11px; border: 1px solid #e4ebf2; border-radius: 8px; background: #fff; }
+.strategy-profit-grid small { display: block; margin-bottom: 5px; color: #8b99a8; font-size: 8px; font-weight: 800; }
+.strategy-profit-grid strong { display: block; font-size: 22px; line-height: 1; }
+.strategy-profit-grid span { display: block; margin-top: 5px; color: #7f8e9e; font-size: 8px; line-height: 1.45; }
+.strategy-profit-grid em { display: block; margin-top: 7px; color: #607083; font-size: 8px; font-style: normal; line-height: 1.45; }
+.strategy-profit-grid article.plus strong { color: #0a9a70; }
+.strategy-profit-grid article.minus strong { color: #cf4053; }
 
 .racer-card { margin-top: 18px; padding: 22px 24px 10px; }
 .legend { display: flex; align-items: center; gap: 7px; color: #8a99aa; font-size: 9px; }
@@ -606,7 +616,7 @@ footer { display: flex; justify-content: space-between; padding: 22px 3px 0; col
   .daily-performance-head { display: block; }
   .daily-performance-head > span { display: inline-block; margin-top: 8px; }
   .simulated-profit-head { display: block; }
-  .simulated-profit-head > strong { display: block; margin-top: 10px; }
-  .simulated-profit-grid { grid-template-columns: 1fr; }
+  .simulated-profit-head > span { display: inline-block; margin-top: 10px; }
+  .strategy-profit-grid { grid-template-columns: 1fr; }
   .value-legend span { display: none; }
 }
