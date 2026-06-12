@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260612-1">
+  <link rel="stylesheet" href="styles.css?v=20260612-4">
 </head>
 <body>
   <div class="app-shell">
@@ -170,21 +170,26 @@
               <div class="card-heading">
                 <div>
                   <p class="eyebrow">RECOMMENDED</p>
-                  <h2 id="ticketHeading">鉄板・穴予測</h2>
+                  <h2 id="ticketHeading">本命・狙い・穴予測</h2>
                 </div>
                 <span class="ticket-type">3連単</span>
               </div>
               <div class="ticket-section solid-ticket-section">
-                <div class="ticket-section-title"><b>鉄板予測</b><span>確率・公式評価を優先</span></div>
+                <div class="ticket-section-title"><b>本命4点</b><span>確率・公式評価を優先</span></div>
                 <div id="solidTicket" class="main-ticket"></div>
                 <div id="solidSubTickets" class="sub-tickets"></div>
               </div>
+              <div class="ticket-section aim-ticket-section">
+                <div class="ticket-section-title"><b>狙い4点</b><span>確率と配当妙味のバランス</span></div>
+                <div id="aimTicket" class="main-ticket aim-main-ticket"></div>
+                <div id="aimSubTickets" class="sub-tickets"></div>
+              </div>
               <div class="ticket-section upset-ticket-section">
-                <div class="ticket-section-title"><b>穴予測</b><span>無理な大穴は除外</span></div>
+                <div class="ticket-section-title"><b>穴4点</b><span>荒れ筋・高配当候補</span></div>
                 <div id="upsetTicket" class="main-ticket upset-main-ticket"></div>
                 <div id="upsetSubTickets" class="sub-tickets"></div>
               </div>
-              <p class="ticket-note">鉄板は予測確率を優先。穴は最低確率を満たし、上位評価艇を含む買い目だけを抽出します。</p>
+              <p class="ticket-note">本命は的中率、狙いは期待値、穴は高配当の可能性を重視。各4点ずつ、合計12点で検証します。</p>
             </div>
 
           </div>
@@ -242,12 +247,12 @@
             </div>
             <div class="value-legend">
               <span>予測確率 × 公式オッズ</span>
-              <b>上位5点</b>
+              <b>本命・狙い・穴</b>
             </div>
           </div>
           <p class="section-description">的中確率だけでなく、取得できた公式3連単オッズとのバランスから買い目の妙味を比較します。</p>
           <div id="valuePicks" class="value-picks"></div>
-          <p class="data-caution">無料表示では上位3点まで。プレミアムでは上位5点・公式オッズ反映・展示後再計算を開放します。</p>
+          <p class="data-caution">無料表示では一部表示。プレミアムでは本命4点・狙い4点・穴4点、公式オッズ反映・展示後再計算を開放します。</p>
         </section>
 
         <section id="raceRanking" class="card ranking-card">
@@ -303,7 +308,7 @@
           </div>
           <div class="learning-note">
             <b>学習方針</b>
-            公式結果と5点予測を毎レース比較し、外れ方を蓄積します。勝率改善はこの履歴から「会場・風・波・展示・公式予想・コース」の重みを調整していく設計にします。
+            公式結果と本命4点・狙い4点・穴4点を毎レース比較し、外れ方を蓄積します。勝率改善はこの履歴から「会場・風・波・展示・公式予想・コース」の重みを調整していく設計にします。
           </div>
           <div class="daily-performance-grid">
             <div class="daily-stat">
@@ -317,7 +322,7 @@
               <span>レース</span>
             </div>
             <div class="daily-stat hit">
-              <small>5点内的中</small>
+              <small>12点内的中</small>
               <strong id="dailyExactHits">0</strong>
               <span id="dailyExactRate">0%</span>
             </div>
@@ -333,24 +338,11 @@
             <div class="simulated-profit-head">
               <div>
                 <p class="eyebrow">SIMULATION</p>
-                <h3>予測通り買っていた場合のトータル収支</h3>
+                <h3>予測通り買っていた場合のカテゴリ別収支</h3>
               </div>
-              <strong id="simulatedNet">0円</strong>
+              <span id="simulatedTotalSummary">全体 0円</span>
             </div>
-            <div class="simulated-profit-grid">
-              <div>
-                <small>投資額</small>
-                <b id="simulatedStake">0円</b>
-              </div>
-              <div>
-                <small>回収額</small>
-                <b id="simulatedReturn">0円</b>
-              </div>
-              <div>
-                <small>回収率</small>
-                <b id="simulatedRecoveryRate">0%</b>
-              </div>
-            </div>
+            <div id="strategyProfitGrid" class="strategy-profit-grid"></div>
             <p id="simulatedProfitNote" class="simulated-profit-note"></p>
           </div>
         </section>
@@ -399,7 +391,7 @@
             <article class="plan-card premium">
               <span>PREMIUM</span>
               <strong>月額 980円</strong>
-              <p>全レース5点予測・成績分析・展示後更新</p>
+              <p>本命4点・狙い4点・穴4点・成績分析・展示後更新</p>
             </article>
           </div>
           <div class="plan-actions" role="group" aria-label="表示プラン切り替え">
@@ -416,6 +408,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260612-2"></script>
+  <script src="app.js?v=20260612-10"></script>
 </body>
 </html>

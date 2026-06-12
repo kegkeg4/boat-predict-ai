@@ -31,6 +31,11 @@ const PLAN_MODE_KEY = "boat-predict-plan-mode";
 const PROGRAM_CACHE_MS = 6 * 60 * 60 * 1000;
 const PERFORMANCE_BET_UNIT_YEN = 100;
 const RESULT_UNAVAILABLE_CACHE_MS = 60 * 1000;
+const REQUEST_TIMEOUT_MS = 10000;
+const MAIN_PROGRAM_TIMEOUT_MS = 15000;
+const BACKGROUND_PROGRAM_TIMEOUT_MS = 6000;
+const SIGNAL_TIMEOUT_MS = 7000;
+const RESULT_TIMEOUT_MS = 6000;
 const officialMarks = ["◎", "○", "△", "×"];
 const raceCutoffTimes = ["10:35", "11:04", "11:33", "12:02", "12:31", "13:00", "13:29", "13:58", "14:27", "14:56", "15:25", "15:54"];
 const officialRacerProfiles = {
@@ -142,6 +147,7 @@ let currentData = null;
 let predictionRequestId = 0;
 let activeProgramController = null;
 let performanceRefreshTimer = null;
+let performanceRefreshInFlight = false;
 let isPremiumMode = localStorage.getItem(PLAN_MODE_KEY) === "premium";
 const dynamicPrograms = loadStoredPrograms();
 const dynamicResults = {};
@@ -175,6 +181,24 @@ function storeProgram(key) {
   }
   stored[key] = { savedAt: Date.now(), program: dynamicPrograms[key] };
   localStorage.setItem(PROGRAM_CACHE_KEY, JSON.stringify(stored));
+}
+
+function createTimeoutError() {
+  const error = new Error("公式データ取得がタイムアウトしました");
+  error.name = "TimeoutError";
+  return error;
+}
+
+async function fetchWithTimeout(url, options = {}) {
+  const { signal, timeoutMs = REQUEST_TIMEOUT_MS } = options;
+  if (signal?.aborted) throw new DOMException("aborted", "AbortError");
+  let timeoutId;
+  return Promise.race([
+    fetch(url, { signal }),
+    new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(createTimeoutError()), timeoutMs);
+    })
+  ]).finally(() => clearTimeout(timeoutId));
 }
 
 function setPlanMode(mode) {
@@ -215,7 +239,7 @@ function applyPlanMode() {
 async function refreshWarmupStatus() {
   if (!warmupStatus) return;
   try {
-    const response = await fetch("/api/warmup");
+    const response = await fetchWithTimeout("/api/warmup", { timeoutMs: 5000 });
     if (!response.ok) throw new Error(`warmup status ${response.status}`);
     const status = await response.json();
     warmupStatus.classList.toggle("is-error", false);
@@ -321,18 +345,18 @@ function getOfficialProgramRace(race = selectedRace) {
 }
 
 async function loadOfficialProgram(signal) {
-  return loadOfficialProgramForRace(selectedRace, signal);
+  return loadOfficialProgramForRace(selectedRace, signal, MAIN_PROGRAM_TIMEOUT_MS);
 }
 
-async function loadOfficialProgramForRace(race, signal) {
+async function loadOfficialProgramForRace(race, signal, timeoutMs = REQUEST_TIMEOUT_MS) {
   const key = getProgramKey();
   const cached = dynamicPrograms[key];
   const cachedRace = cached?.races.find((item) => item.race === race);
   if (cachedRace?.detailed) return cached;
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `/api/program?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}&race=${race}`,
-    { signal }
+    { signal, timeoutMs }
   );
   if (!response.ok) throw new Error(`公式データ取得エラー: ${response.status}`);
   const program = await response.json();
@@ -369,9 +393,9 @@ async function loadRaceSignals(signal, race = selectedRace) {
   const key = getRaceSignalKey(race);
   if (dynamicRaceSignals[key]) return dynamicRaceSignals[key];
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `/api/signals?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}&race=${race}`,
-    { signal }
+    { signal, timeoutMs: SIGNAL_TIMEOUT_MS }
   );
   if (!response.ok) throw new Error(`公式シグナル取得エラー: ${response.status}`);
   const payload = await response.json();
@@ -610,9 +634,9 @@ async function loadOfficialResultForRace(race, signal) {
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
   resultRequestCache[key] = (async () => {
     try {
-      const response = await fetch(
+      const response = await fetchWithTimeout(
         `/api/result?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}&race=${race}`,
-        { signal }
+        { signal, timeoutMs: RESULT_TIMEOUT_MS }
       );
       if (!response.ok) throw new Error(`公式結果取得エラー: ${response.status}`);
       const payload = await response.json();
@@ -1472,52 +1496,58 @@ async function runWithConcurrency(items, limit, worker, afterEach) {
 }
 
 async function refreshDailyPerformanceResults(requestId) {
+  if (performanceRefreshInFlight) return;
+  performanceRefreshInFlight = true;
   const allRaces = Array.from({ length: 12 }, (_, index) => index + 1);
-  renderDailyPerformance();
-
-  const key = getProgramKey();
-  const missingProgramRaces = allRaces.filter((race) => {
-    const cachedRace = dynamicPrograms[key]?.races.find((item) => item.race === race);
-    return !cachedRace?.detailed;
-  });
-  await runWithConcurrency(
-    missingProgramRaces,
-    5,
-    async (race) => {
-      await loadOfficialProgramForRace(race, activeProgramController.signal).catch((error) => {
-        if (error.name !== "AbortError") console.warn(error);
-        return null;
-      });
-    },
-    () => {
-      if (requestId === predictionRequestId) renderDailyPerformance();
-    }
-  );
-  if (requestId !== predictionRequestId) return;
-  renderDailyPerformance();
-
-  const completedRaces = allRaces
-    .filter((race) => isRaceCompleted(race) && getPrimaryPredictionForRace(race) && !getVerifiedResult(race));
-  if (!completedRaces.length) {
+  try {
     renderDailyPerformance();
-    return;
-  }
-  await runWithConcurrency(
-    completedRaces,
-    6,
-    async (race) => {
-      await loadOfficialResultForRace(race, activeProgramController.signal).catch((error) => {
-      if (error.name !== "AbortError") console.warn(error);
-      return null;
-      });
-    },
-    () => {
-      if (requestId === predictionRequestId) renderDailyPerformance();
+
+    const key = getProgramKey();
+    const missingProgramRaces = allRaces.filter((race) => {
+      const cachedRace = dynamicPrograms[key]?.races.find((item) => item.race === race);
+      return !cachedRace?.detailed;
+    });
+    await runWithConcurrency(
+      missingProgramRaces,
+      2,
+      async (race) => {
+        await loadOfficialProgramForRace(race, activeProgramController.signal, BACKGROUND_PROGRAM_TIMEOUT_MS).catch((error) => {
+          if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
+          return null;
+        });
+      },
+      () => {
+        if (requestId === predictionRequestId) renderDailyPerformance();
+      }
+    );
+    if (requestId !== predictionRequestId) return;
+    renderDailyPerformance();
+
+    const completedRaces = allRaces
+      .filter((race) => isRaceCompleted(race) && getPrimaryPredictionForRace(race) && !getVerifiedResult(race));
+    if (!completedRaces.length) {
+      renderDailyPerformance();
+      return;
     }
-  );
-  if (requestId !== predictionRequestId) return;
-  updateRaceButtonStates();
-  renderDailyPerformance();
+    await runWithConcurrency(
+      completedRaces,
+      3,
+      async (race) => {
+        await loadOfficialResultForRace(race, activeProgramController.signal).catch((error) => {
+          if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
+          return null;
+        });
+      },
+      () => {
+        if (requestId === predictionRequestId) renderDailyPerformance();
+      }
+    );
+    if (requestId !== predictionRequestId) return;
+    updateRaceButtonStates();
+    renderDailyPerformance();
+  } finally {
+    performanceRefreshInFlight = false;
+  }
 }
 
 function scheduleDailyPerformanceRefresh(requestId) {
@@ -1530,7 +1560,19 @@ function scheduleDailyPerformanceRefresh(requestId) {
     if (requestId === predictionRequestId) {
       refreshDailyPerformanceResults(requestId);
     }
-  }, 120);
+  }, 3000);
+}
+
+function schedulePostPredictionFetches(data, requestId) {
+  setTimeout(() => {
+    if (requestId !== predictionRequestId) return;
+    refreshRaceSignals(data, requestId);
+  }, 450);
+  setTimeout(() => {
+    if (requestId !== predictionRequestId) return;
+    refreshOfficialResult(data, requestId);
+  }, 900);
+  scheduleDailyPerformanceRefresh(requestId);
 }
 
 async function runPrediction(withLoading = true) {
@@ -1553,17 +1595,23 @@ async function runPrediction(withLoading = true) {
     document.querySelector("#loadingMessage").textContent =
       "BOAT RACE公式の出走表を取得しています...";
   }
+  let programLoadError = null;
   try {
     await loadOfficialProgram(activeProgramController.signal);
   } catch (error) {
     if (error.name !== "AbortError") {
+      programLoadError = error;
       console.warn(error);
       document.querySelector("#unavailableState strong").textContent =
-        error instanceof TypeError
+        error.name === "TimeoutError"
+          ? "公式データ取得がタイムアウトしました"
+          : error instanceof TypeError
           ? "取得サーバーに接続できません"
           : "公式出走表の取得に失敗しました";
       document.querySelector("#unavailableState p").textContent =
-        error instanceof TypeError
+        error.name === "TimeoutError"
+          ? "公式サイトまたは取得サーバーの応答が遅いため、10秒で打ち切りました。少し待って再実行してください。"
+          : error instanceof TypeError
           ? "ローカル取得サーバーが停止している可能性があります。サーバー起動後に画面を再読み込みしてください。"
           : "公式サイトへの接続または取得サーバーを確認し、少し待って再実行してください。";
     }
@@ -1575,9 +1623,11 @@ async function runPrediction(withLoading = true) {
   document.querySelector("#officialProgramLink").href =
     `https://www.boatrace.jp/owpc/pc/race/raceindex?jcd=${jcd}&hd=${hd}`;
   if (!data) {
-    const readiness = getProgramReadinessMessage();
-    document.querySelector("#unavailableState strong").textContent = readiness.title;
-    document.querySelector("#unavailableState p").textContent = readiness.body;
+    if (!programLoadError) {
+      const readiness = getProgramReadinessMessage();
+      document.querySelector("#unavailableState strong").textContent = readiness.title;
+      document.querySelector("#unavailableState p").textContent = readiness.body;
+    }
     currentData = null;
     loadingState.hidden = true;
     dashboard.hidden = true;
@@ -1591,9 +1641,7 @@ async function runPrediction(withLoading = true) {
   if (!withLoading) {
     renderRace(data);
     dashboard.hidden = false;
-    refreshRaceSignals(data, requestId);
-    refreshOfficialResult(data, requestId);
-    scheduleDailyPerformanceRefresh(requestId);
+    schedulePostPredictionFetches(data, requestId);
     return;
   }
 
@@ -1605,9 +1653,7 @@ async function runPrediction(withLoading = true) {
     [{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "translateY(0)" }],
     { duration: 220, easing: "ease-out" }
   );
-  refreshRaceSignals(data, requestId);
-  refreshOfficialResult(data, requestId);
-  scheduleDailyPerformanceRefresh(requestId);
+  schedulePostPredictionFetches(data, requestId);
 }
 
 async function refreshOfficialResult(data, requestId) {
@@ -1627,7 +1673,7 @@ setupControls();
 applyPlanMode();
 runPrediction(true);
 refreshWarmupStatus();
-setInterval(refreshWarmupStatus, 5000);
+setInterval(refreshWarmupStatus, 60000);
 predictButton.addEventListener("click", () => runPrediction(true));
 freePlanButton?.addEventListener("click", () => setPlanMode("free"));
 premiumPlanButton?.addEventListener("click", () => setPlanMode("premium"));
