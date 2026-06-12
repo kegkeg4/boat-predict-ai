@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260611-3">
+  <link rel="stylesheet" href="styles.css?v=20260612-1">
 </head>
 <body>
   <div class="app-shell">
@@ -329,6 +329,30 @@
           </div>
           <p id="dailyPerformanceNote" class="daily-performance-note"></p>
           <div id="performanceRaceList" class="performance-race-list"></div>
+          <div class="simulated-profit-card">
+            <div class="simulated-profit-head">
+              <div>
+                <p class="eyebrow">SIMULATION</p>
+                <h3>予測通り買っていた場合のトータル収支</h3>
+              </div>
+              <strong id="simulatedNet">0円</strong>
+            </div>
+            <div class="simulated-profit-grid">
+              <div>
+                <small>投資額</small>
+                <b id="simulatedStake">0円</b>
+              </div>
+              <div>
+                <small>回収額</small>
+                <b id="simulatedReturn">0円</b>
+              </div>
+              <div>
+                <small>回収率</small>
+                <b id="simulatedRecoveryRate">0%</b>
+              </div>
+            </div>
+            <p id="simulatedProfitNote" class="simulated-profit-note"></p>
+          </div>
         </section>
 
         <section id="resultCard" class="card result-card" hidden>
@@ -392,6 +416,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260611-6"></script>
+  <script src="app.js?v=20260612-1"></script>
 </body>
 </html>

@@ -29,6 +29,7 @@ const PROGRAM_CACHE_KEY = "boat-predict-official-programs-v1";
 const LEARNING_LOG_KEY = "boat-predict-learning-log-v1";
 const PLAN_MODE_KEY = "boat-predict-plan-mode";
 const PROGRAM_CACHE_MS = 6 * 60 * 60 * 1000;
+const PERFORMANCE_BET_UNIT_YEN = 100;
 const officialMarks = ["◎", "○", "△", "×"];
 const raceCutoffTimes = ["10:35", "11:04", "11:33", "12:02", "12:31", "13:00", "13:29", "13:58", "14:27", "14:56", "15:25", "15:54"];
 const officialRacerProfiles = {
@@ -1165,6 +1166,9 @@ function calculateDailyPerformance() {
     judged: 0,
     exactHits: 0,
     leaderHits: 0,
+    simulatedStake: 0,
+    simulatedReturn: 0,
+    simulatedNet: 0,
     rows: []
   };
 
@@ -1187,12 +1191,20 @@ function calculateDailyPerformance() {
     if (!official) continue;
     row.official = official;
     totals.judged += 1;
+    const purchasedTickets = prediction.picks.length;
+    row.simulatedStake = purchasedTickets * PERFORMANCE_BET_UNIT_YEN;
+    row.simulatedReturn = 0;
     const resultKey = official.result.join("-");
     row.hitIndex = prediction.picks.findIndex((pick) => pick.ticket.join("-") === resultKey);
     row.leaderHit = prediction.picks.some((pick) => pick.ticket[0] === official.result[0]);
     if (row.hitIndex >= 0) {
       totals.exactHits += 1;
+      row.simulatedReturn = official.payout;
     }
+    row.simulatedNet = row.simulatedReturn - row.simulatedStake;
+    totals.simulatedStake += row.simulatedStake;
+    totals.simulatedReturn += row.simulatedReturn;
+    totals.simulatedNet += row.simulatedNet;
     if (row.leaderHit) {
       totals.leaderHits += 1;
     }
@@ -1202,6 +1214,15 @@ function calculateDailyPerformance() {
 
 function renderTicketText(ticket) {
   return ticket.join("-");
+}
+
+function formatYen(value) {
+  return `${Math.round(value).toLocaleString("ja-JP")}円`;
+}
+
+function formatSignedYen(value) {
+  const rounded = Math.round(value);
+  return `${rounded >= 0 ? "+" : "-"}${Math.abs(rounded).toLocaleString("ja-JP")}円`;
 }
 
 function renderPerformanceRaceList(rows) {
@@ -1230,6 +1251,13 @@ function renderPerformanceRaceList(rows) {
           <b>${resultText}</b>
           ${row.official ? `<em>${row.official.payout.toLocaleString("ja-JP")}円</em>` : ""}
         </div>
+        ${row.official ? `
+          <div class="performance-money ${row.simulatedNet >= 0 ? "plus" : "minus"}">
+            <small>5点×${PERFORMANCE_BET_UNIT_YEN}円</small>
+            <b>${formatSignedYen(row.simulatedNet)}</b>
+            <span>投資 ${formatYen(row.simulatedStake)} / 回収 ${formatYen(row.simulatedReturn)}</span>
+          </div>
+        ` : ""}
         <div class="performance-picks">
           ${row.prediction.picks.map((pick, index) => `
             <span class="${row.official && pick.ticket.join("-") === row.official.result.join("-") ? "matched" : ""}">
@@ -1273,17 +1301,25 @@ function renderDailyPerformance() {
   const totals = calculateDailyPerformance();
   const exactRate = totals.judged ? Math.round(totals.exactHits / totals.judged * 100) : 0;
   const leaderRate = totals.judged ? Math.round(totals.leaderHits / totals.judged * 100) : 0;
+  const recoveryRate = totals.simulatedStake ? Math.round(totals.simulatedReturn / totals.simulatedStake * 100) : 0;
   document.querySelector("#dailyPredictedCount").textContent = totals.predicted;
   document.querySelector("#dailyJudgedCount").textContent = totals.judged;
   document.querySelector("#dailyExactHits").textContent = totals.exactHits;
   document.querySelector("#dailyExactRate").textContent = `${exactRate}%`;
   document.querySelector("#dailyLeaderHits").textContent = totals.leaderHits;
   document.querySelector("#dailyLeaderRate").textContent = `${leaderRate}%`;
+  document.querySelector("#simulatedStake").textContent = formatYen(totals.simulatedStake);
+  document.querySelector("#simulatedReturn").textContent = formatYen(totals.simulatedReturn);
+  document.querySelector("#simulatedNet").textContent = formatSignedYen(totals.simulatedNet);
+  document.querySelector("#simulatedNet").className = totals.simulatedNet >= 0 ? "plus" : "minus";
+  document.querySelector("#simulatedRecoveryRate").textContent = `${recoveryRate}%`;
   document.querySelector("#dailyPerformanceStatus").textContent = totals.completed > totals.judged
     ? "結果取得中"
     : totals.judged ? "判定済み" : "未判定";
   document.querySelector("#dailyPerformanceNote").textContent =
     `対象は${formatDate(dateInput.value)} ${venues[Number(venueSelect.value)].name}。3連単は各レース上位5点のどれかが確定結果と一致した場合に的中として集計します。`;
+  document.querySelector("#simulatedProfitNote").textContent =
+    `判定済み${totals.judged}レースで、上位5点を各${PERFORMANCE_BET_UNIT_YEN}円ずつ購入した場合の仮想収支です。払戻は公式3連単の100円あたり払戻で計算しています。`;
   saveLearningLog(totals.rows);
   renderPerformanceRaceList(totals.rows);
 }

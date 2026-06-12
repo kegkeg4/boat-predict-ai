@@ -471,9 +471,26 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .performance-result small { color: #96a4b3; font-size: 8px; font-weight: 700; }
 .performance-result b { font-size: 12px; }
 .performance-result em { margin-left: auto; color: #6f7f91; font-size: 9px; font-style: normal; }
+.performance-money { display: grid; gap: 3px; margin-top: 8px; padding: 8px; border-radius: 7px; background: #f4f7fa; }
+.performance-money small { color: #8d9aaa; font-size: 8px; font-weight: 800; }
+.performance-money b { font-size: 14px; }
+.performance-money span { color: #7e8d9d; font-size: 8px; line-height: 1.35; }
+.performance-money.plus b { color: #0a9a70; }
+.performance-money.minus b { color: #cf4053; }
 .performance-picks { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
 .performance-picks span { padding: 4px 6px; border-radius: 5px; color: #52677c; background: #eef3f8; font-size: 9px; font-weight: 700; }
 .performance-picks span.matched { color: #fff; background: #10a979; }
+.simulated-profit-card { margin-top: 16px; padding: 16px; border: 1px solid #d9e5f0; border-radius: 11px; background: linear-gradient(135deg, #fff, #f5faff); }
+.simulated-profit-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.simulated-profit-head h3 { margin: 0; font-size: 15px; letter-spacing: -.02em; }
+.simulated-profit-head > strong { font-size: 24px; line-height: 1; white-space: nowrap; }
+.simulated-profit-head > strong.plus { color: #0a9a70; }
+.simulated-profit-head > strong.minus { color: #cf4053; }
+.simulated-profit-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 13px; }
+.simulated-profit-grid div { padding: 11px; border: 1px solid #e4ebf2; border-radius: 8px; background: #fff; }
+.simulated-profit-grid small { display: block; margin-bottom: 5px; color: #8b99a8; font-size: 8px; font-weight: 800; }
+.simulated-profit-grid b { font-size: 17px; }
+.simulated-profit-note { margin: 10px 0 0; color: #7f8e9e; font-size: 9px; line-height: 1.5; }
 
 .racer-card { margin-top: 18px; padding: 22px 24px 10px; }
 .legend { display: flex; align-items: center; gap: 7px; color: #8a99aa; font-size: 9px; }
@@ -588,5 +605,8 @@ footer { display: flex; justify-content: space-between; padding: 22px 3px 0; col
   .daily-performance { padding: 13px; }
   .daily-performance-head { display: block; }
   .daily-performance-head > span { display: inline-block; margin-top: 8px; }
+  .simulated-profit-head { display: block; }
+  .simulated-profit-head > strong { display: block; margin-top: 10px; }
+  .simulated-profit-grid { grid-template-columns: 1fr; }
   .value-legend span { display: none; }
 }
