@@ -30,6 +30,7 @@ const LEARNING_LOG_KEY = "boat-predict-learning-log-v1";
 const PLAN_MODE_KEY = "boat-predict-plan-mode";
 const PROGRAM_CACHE_MS = 6 * 60 * 60 * 1000;
 const PERFORMANCE_BET_UNIT_YEN = 100;
+const RESULT_UNAVAILABLE_CACHE_MS = 60 * 1000;
 const officialMarks = ["◎", "○", "△", "×"];
 const raceCutoffTimes = ["10:35", "11:04", "11:33", "12:02", "12:31", "13:00", "13:29", "13:58", "14:27", "14:56", "15:25", "15:54"];
 const officialRacerProfiles = {
@@ -145,6 +146,8 @@ let isPremiumMode = localStorage.getItem(PLAN_MODE_KEY) === "premium";
 const dynamicPrograms = loadStoredPrograms();
 const dynamicResults = {};
 const dynamicRaceSignals = {};
+const resultUnavailableCache = {};
+const resultRequestCache = {};
 
 function loadStoredPrograms() {
   try {
@@ -201,7 +204,7 @@ function applyPlanMode() {
       lock.innerHTML = `
         <span>PREMIUM</span>
         <strong>プレミアムで開放</strong>
-        <p>全レース5点予測・成績分析・展示後再計算を利用できます。</p>
+        <p>本命4点・狙い4点・穴4点、成績分析・展示後再計算を利用できます。</p>
         <a href="#plans">プランを見る</a>
       `;
       section.append(lock);
@@ -601,19 +604,31 @@ async function loadOfficialResultForRace(race, signal) {
   if (!isRaceCompleted(race)) return null;
   const key = `${getProgramKey()}-${race}`;
   if (isValidOfficialResult(dynamicResults[key])) return dynamicResults[key];
+  const unavailableAt = resultUnavailableCache[key];
+  if (unavailableAt && Date.now() - unavailableAt < RESULT_UNAVAILABLE_CACHE_MS) return null;
+  if (resultRequestCache[key]) return resultRequestCache[key];
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
-  const response = await fetch(
-    `/api/result?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}&race=${race}`,
-    { signal }
-  );
-  if (!response.ok) throw new Error(`公式結果取得エラー: ${response.status}`);
-  const payload = await response.json();
-  if (payload.error) throw new Error(payload.error);
-  if (payload.available && isValidOfficialResult(payload.result)) {
-    dynamicResults[key] = payload.result;
-    return payload.result;
-  }
-  return null;
+  resultRequestCache[key] = (async () => {
+    try {
+      const response = await fetch(
+        `/api/result?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}&race=${race}`,
+        { signal }
+      );
+      if (!response.ok) throw new Error(`公式結果取得エラー: ${response.status}`);
+      const payload = await response.json();
+      if (payload.error) throw new Error(payload.error);
+      if (payload.available && isValidOfficialResult(payload.result)) {
+        dynamicResults[key] = payload.result;
+        delete resultUnavailableCache[key];
+        return payload.result;
+      }
+      resultUnavailableCache[key] = Date.now();
+      return null;
+    } finally {
+      delete resultRequestCache[key];
+    }
+  })();
+  return resultRequestCache[key];
 }
 
 function buildRaceData(race = selectedRace) {
@@ -851,7 +866,7 @@ function renderRace(data) {
   document.querySelector("#currentSolidScore").textContent = Math.round(currentTendency.solid);
   document.querySelector("#currentUpsetScore").textContent = Math.round(currentTendency.upset);
   document.querySelector("#predictionHeading").textContent = isCompleted ? "予測時点の着順評価" : "着順予測";
-  document.querySelector("#ticketHeading").textContent = isCompleted ? "予測時点の鉄板・穴予測" : "鉄板・穴予測";
+  document.querySelector("#ticketHeading").textContent = isCompleted ? "予測時点の本命・狙い・穴予測" : "本命・狙い・穴予測";
   updateActionButton();
 
   document.querySelector("#predictionRows").innerHTML = ranking.map((racer, index) => `
@@ -984,19 +999,23 @@ function renderOfficialResult(data) {
     return;
   }
 
-  const valuePicks = buildTicketCandidates(data).slice(0, 5);
+  const strategyGroups = buildTicketStrategyGroups(data);
+  const valuePicks = strategyGroups.flatMap((group) =>
+    group.picks.map((pick, index) => ({ ...pick, strategyKey: group.key, strategyLabel: group.label, strategyIndex: index }))
+  );
   const resultKey = official.result.join("-");
   const hitIndex = valuePicks.findIndex((pick) =>
     pick.ticket.map((racer) => racer.boat).join("-") === resultKey
   );
+  const hitPick = hitIndex >= 0 ? valuePicks[hitIndex] : null;
   const badge = document.querySelector("#resultHitBadge");
   badge.className = `result-hit-badge ${hitIndex >= 0 ? "hit" : "miss"}`;
-  badge.textContent = hitIndex >= 0 ? "上位5点で的中" : "上位5点は不的中";
+  badge.textContent = hitPick ? `${hitPick.strategyLabel}${hitPick.strategyIndex + 1}点目で的中` : "12点は不的中";
   document.querySelector("#officialResult").innerHTML = official.result
     .map((boat, index) => `${index ? "<i>›</i>" : ""}${boatBadge(boat)}`)
     .join("");
   document.querySelector("#resultPayout").textContent = `${official.payout.toLocaleString("ja-JP")}円`;
-  document.querySelector("#resultPredictionRank").textContent = hitIndex >= 0 ? `${hitIndex + 1}番予想` : "圏外";
+  document.querySelector("#resultPredictionRank").textContent = hitPick ? `${hitPick.strategyLabel} ${hitPick.strategyIndex + 1}点目` : "圏外";
   const predictedFirst = data.ranking[0];
   const winner = official.result[0];
   document.querySelector("#resultEvaluation").textContent = winner === predictedFirst.boat ? "1着艇を的中" : `${winner}号艇が勝利`;
@@ -1013,36 +1032,121 @@ function renderTicket(ticket, label) {
   `;
 }
 
-function renderTicketStrategies(data) {
+function uniquePicks(picks, usedKeys = new Set()) {
+  const selected = [];
+  picks.forEach((pick) => {
+    const key = pick.ticket.map((racer) => racer.boat).join("-");
+    if (!usedKeys.has(key)) {
+      usedKeys.add(key);
+      selected.push(pick);
+    }
+  });
+  return selected;
+}
+
+function ensurePickCount(primary, fallback, count, usedKeys) {
+  const selected = uniquePicks(primary, usedKeys).slice(0, count);
+  if (selected.length < count) {
+    selected.push(...uniquePicks(fallback, usedKeys).slice(0, count - selected.length));
+  }
+  if (selected.length < count) {
+    selected.push(...fallback
+      .filter((pick) => !selected.some((selectedPick) =>
+        selectedPick.ticket.map((racer) => racer.boat).join("-") === pick.ticket.map((racer) => racer.boat).join("-")
+      ))
+      .slice(0, count - selected.length));
+  }
+  return selected;
+}
+
+function buildTicketStrategyGroups(data) {
   const candidates = buildTicketCandidates(data);
   const topBoats = new Set(data.ranking.slice(0, 3).map((racer) => racer.boat));
   const officialBoats = new Set(data.officialOrder.slice(0, 3).map((racer) => racer.boat));
-  const solidPicks = [...candidates]
-    .sort((a, b) => {
-      const aAgreement = a.ticket.filter((racer) => officialBoats.has(racer.boat)).length;
-      const bAgreement = b.ticket.filter((racer) => officialBoats.has(racer.boat)).length;
-      return b.probability + bAgreement * 1.8 - (a.probability + aAgreement * 1.8);
-    })
-    .slice(0, 3);
-  const upsetPicks = candidates
-    .filter((pick) =>
-      pick.probability >= 1
-      && pick.estimatedOdds >= 12
-      && pick.ticket.some((racer) => topBoats.has(racer.boat))
-      && pick.ticket[0].popularity <= 4
-    )
-    .sort((a, b) => b.valueScore - a.valueScore)
-    .slice(0, 3);
-  const safeUpsetPicks = upsetPicks.length >= 3 ? upsetPicks : solidPicks;
+  const withScores = candidates.map((pick) => {
+    const agreement = pick.ticket.filter((racer) => officialBoats.has(racer.boat)).length;
+    const topCount = pick.ticket.filter((racer) => topBoats.has(racer.boat)).length;
+    const popularityRisk = pick.ticket.reduce((sum, racer) => sum + racer.popularity, 0);
+    const outsideCount = pick.ticket.filter((racer) => racer.boat >= 4).length;
+    const favoriteCount = pick.ticket.filter((racer) => racer.popularity <= 2).length;
+    const firstPopularity = pick.ticket[0].popularity;
+    const oddsScore = Math.log(Math.max(2, pick.estimatedOdds));
+    const lowProbabilityBonus = clamp(3.2 - pick.probability, 0, 3.2);
+    return {
+      ...pick,
+      agreement,
+      topCount,
+      popularityRisk,
+      outsideCount,
+      favoriteCount,
+      firstPopularity,
+      oddsScore,
+      lowProbabilityBonus,
+      honmeiScore: pick.probability * 3.4 + agreement * 3 + topCount * 1.4 - oddsScore * .5,
+      neraiScore: pick.valueScore * 1.1 + oddsScore * 6 + topCount * 2 - Math.abs(pick.probability - 1.8) * 3,
+      anaScore: oddsScore * 14 + lowProbabilityBonus * 8 + popularityRisk * 1.4 + outsideCount * 5 - favoriteCount * 3 - agreement * 1.2
+    };
+  });
+  const usedKeys = new Set();
+  const honmeiPool = [...withScores]
+    .filter((pick) => pick.estimatedOdds <= 35 || pick.probability >= 1.3)
+    .sort((a, b) => b.honmeiScore - a.honmeiScore);
+  const honmei = ensurePickCount(honmeiPool, withScores, 4, usedKeys);
 
-  document.querySelector("#solidTicket").innerHTML = renderTicket(solidPicks[0].ticket, "本線");
-  document.querySelector("#solidSubTickets").innerHTML = solidPicks.slice(1, isPremiumMode ? 3 : 2).map((pick) => `
-    <div class="sub-ticket">${pick.ticket.map((racer, index) => `${index ? "<span>–</span>" : ""}<b>${racer.boat}</b>`).join("")}</div>
-  `).join("") + (!isPremiumMode ? `<div class="sub-ticket locked">+1点</div>` : "");
-  document.querySelector("#upsetTicket").innerHTML = renderTicket(safeUpsetPicks[0].ticket, "穴本線");
-  document.querySelector("#upsetSubTickets").innerHTML = safeUpsetPicks.slice(1, isPremiumMode ? 3 : 2).map((pick) => `
-    <div class="sub-ticket">${pick.ticket.map((racer, index) => `${index ? "<span>–</span>" : ""}<b>${racer.boat}</b>`).join("")}</div>
-  `).join("") + (!isPremiumMode ? `<div class="sub-ticket locked">+1点</div>` : "");
+  const neraiPool = withScores
+    .filter((pick) =>
+      pick.estimatedOdds >= 6
+      && pick.estimatedOdds <= 80
+      && pick.probability >= .55
+      && pick.topCount >= 1
+    )
+    .sort((a, b) => b.neraiScore - a.neraiScore);
+  const neraiFallback = [...withScores]
+    .filter((pick) => pick.estimatedOdds >= 5 && pick.topCount >= 1)
+    .sort((a, b) => b.neraiScore - a.neraiScore);
+  const nerai = ensurePickCount(neraiPool, neraiFallback, 4, usedKeys);
+
+  const anaPool = withScores
+    .filter((pick) =>
+      pick.estimatedOdds >= 25
+      && pick.probability <= 2.4
+      && (
+        pick.outsideCount >= 1
+        || pick.firstPopularity >= 3
+        || pick.popularityRisk >= 11
+      )
+    )
+    .sort((a, b) => b.anaScore - a.anaScore);
+  const anaFallback = [...withScores]
+    .filter((pick) => pick.estimatedOdds >= 15)
+    .sort((a, b) => b.anaScore - a.anaScore);
+  const ana = ensurePickCount(anaPool, anaFallback, 4, usedKeys);
+
+  return [
+    { key: "honmei", label: "本命", picks: honmei },
+    { key: "nerai", label: "狙い", picks: nerai },
+    { key: "ana", label: "穴", picks: ana }
+  ];
+}
+
+function renderTicketGroup(mainSelector, subSelector, group, mainLabel) {
+  const picks = group.picks;
+  document.querySelector(mainSelector).innerHTML = picks[0]
+    ? `${renderTicket(picks[0].ticket, mainLabel)}<small class="ticket-meta">${picks[0].probability.toFixed(2)}% / ${picks[0].actualOdds ? "公式" : "推定"}${picks[0].estimatedOdds.toFixed(1)}倍</small>`
+    : "―";
+  document.querySelector(subSelector).innerHTML = picks.slice(1, 4).map((pick) => `
+    <div class="sub-ticket">
+      <span class="sub-ticket-combo">${pick.ticket.map((racer, index) => `${index ? "<i>–</i>" : ""}<b>${racer.boat}</b>`).join("")}</span>
+      <small>${pick.probability.toFixed(2)}% / ${pick.estimatedOdds.toFixed(1)}倍</small>
+    </div>
+  `).join("");
+}
+
+function renderTicketStrategies(data) {
+  const [honmei, nerai, ana] = buildTicketStrategyGroups(data);
+  renderTicketGroup("#solidTicket", "#solidSubTickets", honmei, "本命");
+  renderTicketGroup("#aimTicket", "#aimSubTickets", nerai, "狙い");
+  renderTicketGroup("#upsetTicket", "#upsetSubTickets", ana, "穴");
 }
 
 function buildTicketCandidates(data) {
@@ -1075,7 +1179,6 @@ function buildTicketCandidates(data) {
     const valueScore = probability * estimatedOdds;
     return { ticket, probability, estimatedOdds, valueScore, actualOdds: Boolean(actualOdds) };
   })
-    .filter((candidate) => candidate.probability >= .45)
     .sort((a, b) => b.valueScore - a.valueScore);
 }
 
@@ -1099,7 +1202,7 @@ function renderValuePicks(data) {
     <article class="value-pick locked-pick">
       <span class="value-rank">PREMIUM</span>
       <strong>残り2点を開放</strong>
-      <p>5点予測・公式オッズ反映・展示後の再計算はプレミアムで利用できます。</p>
+      <p>本命4点・狙い4点・穴4点、公式オッズ反映・展示後の再計算はプレミアムで利用できます。</p>
       <a href="#plans">プランを見る</a>
     </article>
   ` : "");
@@ -1146,16 +1249,23 @@ function renderRaceRanking(data) {
 function getPrimaryPredictionForRace(race) {
   const raceData = buildRaceData(race);
   if (!raceData) return null;
-  const picks = buildTicketCandidates(raceData).slice(0, 5);
-  return {
-    data: raceData,
-    ticket: picks[0]?.ticket.map((racer) => racer.boat) || raceData.ranking.slice(0, 3).map((racer) => racer.boat),
-    picks: picks.map((pick) => ({
+  const groups = buildTicketStrategyGroups(raceData);
+  const picks = groups.flatMap((group) =>
+    group.picks.map((pick, index) => ({
       ticket: pick.ticket.map((racer) => racer.boat),
       probability: pick.probability,
       estimatedOdds: pick.estimatedOdds,
-      actualOdds: pick.actualOdds
+      actualOdds: pick.actualOdds,
+      strategyKey: group.key,
+      strategyLabel: group.label,
+      strategyIndex: index
     }))
+  );
+  return {
+    data: raceData,
+    ticket: picks[0]?.ticket || raceData.ranking.slice(0, 3).map((racer) => racer.boat),
+    groups: groups.map((group) => ({ key: group.key, label: group.label, picks: picks.filter((pick) => pick.strategyKey === group.key) })),
+    picks
   };
 }
 
@@ -1169,6 +1279,11 @@ function calculateDailyPerformance() {
     simulatedStake: 0,
     simulatedReturn: 0,
     simulatedNet: 0,
+    strategy: {
+      honmei: { label: "本命", stake: 0, return: 0, net: 0, hits: 0 },
+      nerai: { label: "狙い", stake: 0, return: 0, net: 0, hits: 0 },
+      ana: { label: "穴", stake: 0, return: 0, net: 0, hits: 0 }
+    },
     rows: []
   };
 
@@ -1196,10 +1311,21 @@ function calculateDailyPerformance() {
     row.simulatedReturn = 0;
     const resultKey = official.result.join("-");
     row.hitIndex = prediction.picks.findIndex((pick) => pick.ticket.join("-") === resultKey);
+    row.hitPick = row.hitIndex >= 0 ? prediction.picks[row.hitIndex] : null;
     row.leaderHit = prediction.picks.some((pick) => pick.ticket[0] === official.result[0]);
+    Object.values(totals.strategy).forEach((strategy) => {
+      strategy.stake += 4 * PERFORMANCE_BET_UNIT_YEN;
+      strategy.net -= 4 * PERFORMANCE_BET_UNIT_YEN;
+    });
     if (row.hitIndex >= 0) {
       totals.exactHits += 1;
       row.simulatedReturn = official.payout;
+      const strategy = totals.strategy[row.hitPick.strategyKey];
+      if (strategy) {
+        strategy.return += official.payout;
+        strategy.net += official.payout;
+        strategy.hits += 1;
+      }
     }
     row.simulatedNet = row.simulatedReturn - row.simulatedStake;
     totals.simulatedStake += row.simulatedStake;
@@ -1235,7 +1361,7 @@ function renderPerformanceRaceList(rows) {
   list.innerHTML = rows.map((row) => {
     const resultText = row.official ? renderTicketText(row.official.result) : (row.status === "completed" ? "結果未取得" : "未終了");
     const hitLabel = row.official
-      ? row.hitIndex >= 0 ? `${row.hitIndex + 1}番予想で的中` : "5点内不的中"
+      ? row.hitPick ? `${row.hitPick.strategyLabel}${row.hitPick.strategyIndex + 1}点目で的中` : "12点内不的中"
       : row.status === "completed" ? "判定待ち" : "レース前";
     const hitClass = row.official
       ? row.hitIndex >= 0 ? "hit" : "miss"
@@ -1253,7 +1379,7 @@ function renderPerformanceRaceList(rows) {
         </div>
         ${row.official ? `
           <div class="performance-money ${row.simulatedNet >= 0 ? "plus" : "minus"}">
-            <small>5点×${PERFORMANCE_BET_UNIT_YEN}円</small>
+            <small>12点×${PERFORMANCE_BET_UNIT_YEN}円</small>
             <b>${formatSignedYen(row.simulatedNet)}</b>
             <span>投資 ${formatYen(row.simulatedStake)} / 回収 ${formatYen(row.simulatedReturn)}</span>
           </div>
@@ -1261,7 +1387,7 @@ function renderPerformanceRaceList(rows) {
         <div class="performance-picks">
           ${row.prediction.picks.map((pick, index) => `
             <span class="${row.official && pick.ticket.join("-") === row.official.result.join("-") ? "matched" : ""}">
-              #${index + 1} ${renderTicketText(pick.ticket)}
+              ${pick.strategyLabel}${pick.strategyIndex + 1} ${renderTicketText(pick.ticket)}
             </span>
           `).join("")}
         </div>
@@ -1308,18 +1434,27 @@ function renderDailyPerformance() {
   document.querySelector("#dailyExactRate").textContent = `${exactRate}%`;
   document.querySelector("#dailyLeaderHits").textContent = totals.leaderHits;
   document.querySelector("#dailyLeaderRate").textContent = `${leaderRate}%`;
-  document.querySelector("#simulatedStake").textContent = formatYen(totals.simulatedStake);
-  document.querySelector("#simulatedReturn").textContent = formatYen(totals.simulatedReturn);
-  document.querySelector("#simulatedNet").textContent = formatSignedYen(totals.simulatedNet);
-  document.querySelector("#simulatedNet").className = totals.simulatedNet >= 0 ? "plus" : "minus";
-  document.querySelector("#simulatedRecoveryRate").textContent = `${recoveryRate}%`;
+  document.querySelector("#simulatedTotalSummary").textContent =
+    `全体 ${formatSignedYen(totals.simulatedNet)} / 回収率 ${recoveryRate}%`;
+  document.querySelector("#simulatedTotalSummary").className = totals.simulatedNet >= 0 ? "plus" : "minus";
+  document.querySelector("#strategyProfitGrid").innerHTML = Object.values(totals.strategy).map((strategy) => {
+    const rate = strategy.stake ? Math.round(strategy.return / strategy.stake * 100) : 0;
+    return `
+      <article class="${strategy.net >= 0 ? "plus" : "minus"}">
+        <small>${strategy.label}4点</small>
+        <strong>${formatSignedYen(strategy.net)}</strong>
+        <span>${strategy.label}だけ買った場合</span>
+        <em>投資 ${formatYen(strategy.stake)} / 回収 ${formatYen(strategy.return)} / 回収率 ${rate}% / 的中 ${strategy.hits}回</em>
+      </article>
+    `;
+  }).join("");
   document.querySelector("#dailyPerformanceStatus").textContent = totals.completed > totals.judged
     ? "結果取得中"
     : totals.judged ? "判定済み" : "未判定";
   document.querySelector("#dailyPerformanceNote").textContent =
-    `対象は${formatDate(dateInput.value)} ${venues[Number(venueSelect.value)].name}。3連単は各レース上位5点のどれかが確定結果と一致した場合に的中として集計します。`;
+    `対象は${formatDate(dateInput.value)} ${venues[Number(venueSelect.value)].name}。3連単は本命4点・狙い4点・穴4点の合計12点で集計します。`;
   document.querySelector("#simulatedProfitNote").textContent =
-    `判定済み${totals.judged}レースで、上位5点を各${PERFORMANCE_BET_UNIT_YEN}円ずつ購入した場合の仮想収支です。払戻は公式3連単の100円あたり払戻で計算しています。`;
+    `判定済み${totals.judged}レースで、本命だけ・狙いだけ・穴だけを各4点、各${PERFORMANCE_BET_UNIT_YEN}円ずつ購入した場合の仮想収支です。払戻は公式3連単の100円あたり払戻で計算しています。`;
   saveLearningLog(totals.rows);
   renderPerformanceRaceList(totals.rows);
 }
@@ -1477,6 +1612,7 @@ async function runPrediction(withLoading = true) {
 
 async function refreshOfficialResult(data, requestId) {
   if (!isRaceCompleted(selectedRace)) return;
+  renderOfficialResult(data);
   try {
     await loadOfficialResult(activeProgramController.signal);
     if (requestId !== predictionRequestId) return;
