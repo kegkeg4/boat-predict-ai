@@ -30,12 +30,13 @@ const LEARNING_LOG_KEY = "boat-predict-learning-log-v1";
 const PLAN_MODE_KEY = "boat-predict-plan-mode";
 const PROGRAM_CACHE_MS = 6 * 60 * 60 * 1000;
 const PERFORMANCE_BET_UNIT_YEN = 100;
-const RESULT_UNAVAILABLE_CACHE_MS = 60 * 1000;
+const RESULT_UNAVAILABLE_CACHE_MS = 15 * 1000;
 const REQUEST_TIMEOUT_MS = 10000;
 const MAIN_PROGRAM_TIMEOUT_MS = 15000;
 const BACKGROUND_PROGRAM_TIMEOUT_MS = 6000;
 const SIGNAL_TIMEOUT_MS = 7000;
 const RESULT_TIMEOUT_MS = 9000;
+const RESULT_BATCH_TIMEOUT_MS = 16000;
 const STRATEGY_CONFIG = {
   honmei: { label: "本命", count: 5 },
   nerai: { label: "狙い目", count: 1 },
@@ -707,19 +708,43 @@ async function loadOfficialResultForRace(race, signal) {
       if (!response.ok) throw new Error(`公式結果取得エラー: ${response.status}`);
       const payload = await response.json();
       if (payload.error) throw new Error(payload.error);
-      mergeResultWeather(race, payload.weather);
-      if (payload.available && isValidOfficialResult(payload.result)) {
-        dynamicResults[key] = payload.result;
-        delete resultUnavailableCache[key];
-        return payload.result;
-      }
-      resultUnavailableCache[key] = Date.now();
-      return null;
+      return applyOfficialResultPayload(race, payload);
     } finally {
       delete resultRequestCache[key];
     }
   })();
   return resultRequestCache[key];
+}
+
+function applyOfficialResultPayload(race, payload) {
+  if (!payload) return null;
+  if (payload.error) return null;
+  const key = `${getProgramKey()}-${race}`;
+  mergeResultWeather(race, payload.weather);
+  if (payload.available && isValidOfficialResult(payload.result)) {
+    dynamicResults[key] = payload.result;
+    delete resultUnavailableCache[key];
+    return payload.result;
+  }
+  resultUnavailableCache[key] = Date.now();
+  return null;
+}
+
+async function loadOfficialResultsForDay(signal) {
+  const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
+  const response = await fetchWithTimeout(
+    `/api/results?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}`,
+    { signal, timeoutMs: RESULT_BATCH_TIMEOUT_MS }
+  );
+  if (!response.ok) throw new Error(`公式結果一括取得エラー: ${response.status}`);
+  const payload = await response.json();
+  Object.entries(payload.results || {}).forEach(([raceText, resultPayload]) => {
+    const race = Number(raceText);
+    if (Number.isInteger(race) && race >= 1 && race <= 12) {
+      applyOfficialResultPayload(race, resultPayload);
+    }
+  });
+  return payload;
 }
 
 function buildRaceData(race = selectedRace) {
@@ -1450,10 +1475,13 @@ function renderPerformanceRaceList(rows) {
     return;
   }
   list.innerHTML = rows.map((row) => {
-    const resultText = row.official ? renderTicketText(row.official.result) : (row.status === "completed" ? "結果未取得" : "未終了");
+    const isFetchingResult = performanceRefreshInFlight && row.status === "completed" && !row.official;
+    const resultText = row.official
+      ? renderTicketText(row.official.result)
+      : row.status === "completed" ? (isFetchingResult ? "取得中" : "結果未取得") : "未終了";
     const hitLabel = row.official
       ? row.hitPick ? `${row.hitPick.strategyLabel}${row.hitPick.strategyIndex + 1}点目で的中` : "7点内不的中"
-      : row.status === "completed" ? "判定待ち" : "レース前";
+      : row.status === "completed" ? (isFetchingResult ? "取得中" : "判定待ち") : "レース前";
     const hitClass = row.official
       ? row.hitIndex >= 0 ? "hit" : "miss"
       : "pending";
@@ -1582,9 +1610,21 @@ async function refreshDailyPerformanceResults(requestId) {
     const completedRaces = allRaces
       .filter((race) => isRaceCompleted(race) && getPrimaryPredictionForRace(race) && !getVerifiedResult(race));
     if (completedRaces.length) {
+      await loadOfficialResultsForDay(activeProgramController.signal).catch((error) => {
+        if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
+        return null;
+      });
+      if (requestId !== predictionRequestId) return;
+      updateRaceButtonStates();
+      renderDailyPerformance();
+    }
+
+    const remainingResultRaces = allRaces
+      .filter((race) => isRaceCompleted(race) && getPrimaryPredictionForRace(race) && !getVerifiedResult(race));
+    if (remainingResultRaces.length) {
       await runWithConcurrency(
-        completedRaces,
-        3,
+        remainingResultRaces,
+        4,
         async (race) => {
           await loadOfficialResultForRace(race, activeProgramController.signal).catch((error) => {
             if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);

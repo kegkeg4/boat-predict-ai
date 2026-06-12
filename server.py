@@ -697,13 +697,44 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
 def load_result(date, jcd, race):
     compact_date = date.replace("-", "")
     path = f"/owpc/pc/race/raceresult?rno={race}&jcd={jcd}&hd={compact_date}"
-    result = parse_result(fetch_html(path, cache_seconds=60))
+    html_text = fetch_html(path, cache_seconds=60)
+    result = parse_result(html_text)
+    weather = parse_weather(html_text)
     return {
         "date": date,
         "jcd": jcd,
         "race": race,
         "available": result is not None,
         "result": result,
+        "weather": weather,
+    }
+
+
+def load_results(date, jcd):
+    results = {}
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {
+            executor.submit(load_result, date, jcd, race): race
+            for race in range(1, 13)
+        }
+        for future in as_completed(futures):
+            race = futures[future]
+            try:
+                results[str(race)] = future.result()
+            except Exception as error:
+                results[str(race)] = {
+                    "date": date,
+                    "jcd": jcd,
+                    "race": race,
+                    "available": False,
+                    "result": None,
+                    "weather": {"available": False},
+                    "error": str(error),
+                }
+    return {
+        "date": date,
+        "jcd": jcd,
+        "results": results,
     }
 
 
@@ -717,19 +748,23 @@ class AppHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/warmup":
             return self.send_json(get_warmup_status())
-        if parsed.path not in ("/api/program", "/api/result", "/api/signals"):
+        if parsed.path not in ("/api/program", "/api/result", "/api/results", "/api/signals"):
             return super().do_GET()
         query = parse_qs(parsed.query)
         date = query.get("date", [""])[0]
         jcd = query.get("jcd", [""])[0].zfill(2)
         race = query.get("race", ["1"])[0]
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) or not re.fullmatch(
-            r"\d{2}", jcd
-        ) or not race.isdigit() or not 1 <= int(race) <= 12:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) or not re.fullmatch(r"\d{2}", jcd):
+            return self.send_json({"error": "invalid parameters"}, 400)
+        if parsed.path != "/api/results" and (
+            not race.isdigit() or not 1 <= int(race) <= 12
+        ):
             return self.send_json({"error": "invalid parameters"}, 400)
         try:
             if parsed.path == "/api/result":
                 self.send_json(load_result(date, jcd, int(race)))
+            elif parsed.path == "/api/results":
+                self.send_json(load_results(date, jcd))
             elif parsed.path == "/api/signals":
                 self.send_json(load_signals(date, jcd, int(race)))
             else:
