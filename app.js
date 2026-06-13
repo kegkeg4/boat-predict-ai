@@ -24,6 +24,77 @@ const venues = [
   { name: "唐津", water: "淡水・追い風傾向", home: 1.08 },
   { name: "大村", water: "海水・イン優勢", home: 1.03 }
 ];
+const venueCourseProfiles = {
+  戸田: {
+    key: "anti-inner",
+    innerPenalty: 5.8,
+    centerBoost: 2.2,
+    outsideBoost: 2.6,
+    roughBoost: 1.2,
+    upsetBonus: 12,
+    note: "狭水面で1マークが窮屈。イン過信を下げ、センターまくりを加点"
+  },
+  江戸川: {
+    key: "rough-river",
+    innerPenalty: 4.8,
+    centerBoost: 2.0,
+    outsideBoost: 3.0,
+    roughBoost: 2.0,
+    upsetBonus: 14,
+    note: "潮・流れ・波の影響が大きい難水面。ダッシュ勢と波乱を加点"
+  },
+  平和島: {
+    key: "anti-inner-wind",
+    innerPenalty: 4.0,
+    centerBoost: 1.8,
+    outsideBoost: 2.3,
+    roughBoost: 1.5,
+    upsetBonus: 10,
+    note: "1マーク側が窮屈で風の影響も受けやすい。外の攻めを加点"
+  },
+  福岡: {
+    key: "rough-estuary",
+    innerPenalty: 2.4,
+    centerBoost: 1.4,
+    outsideBoost: 1.9,
+    roughBoost: 1.5,
+    upsetBonus: 8,
+    note: "うねりが出やすい水面。内の安定だけで決めず展開を加味"
+  },
+  鳴門: {
+    key: "tide",
+    innerPenalty: 1.5,
+    centerBoost: 1.0,
+    outsideBoost: 1.5,
+    roughBoost: 1.2,
+    upsetBonus: 6,
+    note: "潮位影響を加味し、外の連動を少し加点"
+  },
+  徳山: {
+    key: "inner-strong",
+    innerBoost: 2.0,
+    centerBoost: -.4,
+    outsideBoost: -.8,
+    upsetBonus: -5,
+    note: "イン優勢寄り。1コースの信頼をやや加点"
+  },
+  芦屋: {
+    key: "inner-strong",
+    innerBoost: 2.2,
+    centerBoost: -.4,
+    outsideBoost: -.9,
+    upsetBonus: -5,
+    note: "イン優勢寄り。1コースの信頼をやや加点"
+  },
+  大村: {
+    key: "inner-strong",
+    innerBoost: 3.0,
+    centerBoost: -.7,
+    outsideBoost: -1.2,
+    upsetBonus: -8,
+    note: "全国的にインが強い傾向を重視し、1コースを加点"
+  }
+};
 const OFFICIAL_SIGNAL_WEIGHT = .35;
 const PROGRAM_CACHE_KEY = "boat-predict-official-programs-v1";
 const LEARNING_LOG_KEY = "boat-predict-learning-log-v1";
@@ -460,6 +531,11 @@ function boatBadge(number, small = false) {
 }
 
 function buildRacerComment(racer) {
+  if (Number.isFinite(racer.venueImpact) && Math.abs(racer.venueImpact) >= 2) {
+    return racer.venueImpact > 0
+      ? `会場特性がプラス。${racer.venueNote || "コース形状と水面傾向が展開に向きます。"}`
+      : `会場特性がマイナス。${racer.venueNote || "コース形状から過信は禁物です。"}`;
+  }
   if (Number.isFinite(racer.weatherImpact) && Math.abs(racer.weatherImpact) >= 1.8) {
     return racer.weatherImpact > 0
       ? `天候・風・波の水面補正がプラス。${racer.weatherNote || "展開条件が向く可能性があります。"}`
@@ -523,6 +599,35 @@ function calculateWeatherImpact(boat, wind, wave, direction, weatherLabel) {
     notes.push(boat <= 2 ? "雨水面で内寄りの安定感を評価" : "雨水面で外の握り込みを慎重評価");
   }
   return { score: clamp(score, -5, 3), note: notes[0] || "" };
+}
+
+function getVenueCourseProfile(venue) {
+  return venueCourseProfiles[venue.name] || {
+    key: "standard",
+    innerPenalty: 0,
+    innerBoost: 0,
+    centerBoost: 0,
+    outsideBoost: 0,
+    roughBoost: .6,
+    upsetBonus: 0,
+    note: "標準的な会場補正"
+  };
+}
+
+function calculateVenueCourseImpact(venue, boat, wind, wave) {
+  const profile = getVenueCourseProfile(venue);
+  let score = 0;
+  if (boat === 1) score += (profile.innerBoost || 0) - (profile.innerPenalty || 0);
+  if (boat >= 2 && boat <= 3) score += profile.centerBoost || 0;
+  if (boat >= 4) score += profile.outsideBoost || 0;
+  const rough = (Number.isFinite(wind) && wind >= 4) || (Number.isFinite(wave) && wave >= 3);
+  if (rough && profile.roughBoost) {
+    score += boat === 1 ? -profile.roughBoost : profile.roughBoost * (boat >= 4 ? 1.15 : .75);
+  }
+  return {
+    score: clamp(score, -7, 6),
+    note: profile.note || ""
+  };
 }
 
 function permutations(items, length) {
@@ -725,6 +830,7 @@ function applyOfficialResultPayload(race, payload) {
   if (payload.available && isValidOfficialResult(payload.result)) {
     dynamicResults[key] = payload.result;
     delete resultUnavailableCache[key];
+    renderManshuBanner();
     return payload.result;
   }
   resultUnavailableCache[key] = Date.now();
@@ -771,6 +877,7 @@ function buildRaceData(race = selectedRace) {
   const wave = Number.isFinite(officialWeather.waveHeight) ? officialWeather.waveHeight : null;
   const temperature = Number.isFinite(officialWeather.temperature) ? officialWeather.temperature : null;
   const direction = officialWeather.windDirection || "";
+  const venueProfile = getVenueCourseProfile(venue);
   const phase = getPredictionPhase(race);
   const hasExhibition = officialRace.racers.every((racer) =>
     Number.isFinite(beforeinfo[racer.boat]?.exhibition)
@@ -788,6 +895,7 @@ function buildRaceData(race = selectedRace) {
     const start = officialRacer.start ?? 0.25;
     const courseBase = [26, 17, 13, 10, 7, 5][boat - 1];
     const weatherImpact = calculateWeatherImpact(boat, wind, wave, direction, weather.label);
+    const venueImpact = calculateVenueCourseImpact(venue, boat, wind, wave);
     const localBoost = (local - national) * 3.2 * venue.home;
     const gradeBoost = grade === "A1" ? 7 : grade === "A2" ? 3 : grade === "B2" ? -2 : 0;
     const baseModelScore = courseBase
@@ -797,7 +905,8 @@ function buildRaceData(race = selectedRace) {
       + gradeBoost
       + localBoost
       + (0.18 - start) * 26
-      + weatherImpact.score;
+      + weatherImpact.score
+      + venueImpact.score;
     const exhibitionImpact = phase.exhibitionAvailable
       ? clamp((6.78 - exhibition) * 48, -6, 7)
       : 0;
@@ -823,6 +932,8 @@ function buildRaceData(race = selectedRace) {
       exhibitionImpact,
       weatherImpact: weatherImpact.score,
       weatherNote: weatherImpact.note,
+      venueImpact: venueImpact.score,
+      venueNote: venueImpact.note,
       tilt: live.tilt,
       parts: live.parts,
       condition,
@@ -895,6 +1006,7 @@ function buildRaceData(race = selectedRace) {
     racers,
     signals,
     oddsMap,
+    venueProfile,
     ranking: [...racers].sort((a, b) => b.rawScore - a.rawScore),
     officialOrder
   };
@@ -933,9 +1045,10 @@ function getProgramReadinessMessage() {
 }
 
 function renderRace(data) {
-  const { venue, weather, wind, wave, temperature, direction, racers, ranking, phase } = data;
+  const { venue, weather, wind, wave, temperature, direction, racers, ranking, phase, venueProfile } = data;
   const cutoffTime = getRaceCutoff(selectedRace);
 
+  renderManshuBanner();
   document.querySelector("#summaryMeta").textContent = formatDate(dateInput.value).toUpperCase();
   document.querySelector("#summaryTitle").textContent = `${venue.name} ${selectedRace}R`;
   const isCompleted = isRaceCompleted(selectedRace);
@@ -948,7 +1061,7 @@ function renderRace(data) {
     Number.isFinite(wind) ? `${direction || "風向未取得"} ${wind.toFixed(0)}m` : "公式未取得";
   document.querySelector("#waveValue").textContent =
     Number.isFinite(wave) ? `${wave.toFixed(0)}cm` : "公式未取得";
-  document.querySelector("#waterValue").textContent = venue.water;
+  document.querySelector("#waterValue").textContent = `${venue.water} / ${venueProfile?.key === "standard" ? "標準補正" : "会場補正あり"}`;
   const phaseElement = document.querySelector("#predictionPhase");
   phaseElement.className = `prediction-phase ${phase.key}`;
   phaseElement.textContent = phase.label;
@@ -1012,6 +1125,9 @@ function renderRace(data) {
   const leadComment = first.boat === 1
     ? `1号艇 ${first.name}のイン先行を中心に予測。`
     : `${first.boat}号艇 ${first.name}の当地適性と機力を高く評価。`;
+  const venueComment = venueProfile?.note && venueProfile.key !== "standard"
+    ? `${venue.name}は${venueProfile.note}。`
+    : "";
   const turnComment = first.boat === 1
     ? `第一ターンは1号艇の先マイ、${second.boat}号艇の差し残りを本線に見ます。`
     : first.boat <= 3
@@ -1019,12 +1135,13 @@ function renderRace(data) {
       : `第一ターンは外の攻めで隊形が崩れる展開を想定し、内の残りと外の連動を評価します。`;
   const profile = buildInvestmentProfile(data);
   document.querySelector("#scenarioText").textContent =
-    `${leadComment}${windComment}${turnComment}${profile.label}として、的中率だけでなく期待値と回収率を優先します。`;
+    `${leadComment}${venueComment}${windComment}${turnComment}${profile.label}として、的中率だけでなく期待値と回収率を優先します。`;
 
   const factors = [
     `${first.boat}号艇 当地勝率 ${first.local.toFixed(2)}`,
     `${first.boat}号艇 AI評価 ${first.aiScore}`,
     `公式本命 ${data.officialOrder[0].boat}号艇`,
+    venueProfile?.key !== "standard" ? `会場特性 ${venueProfile.note}` : "会場特性 標準",
     `モーター上位 ${[...racers].sort((a,b) => b.motor - a.motor)[0].boat}号艇`,
     Number.isFinite(first.weatherImpact) && Math.abs(first.weatherImpact) >= .1
       ? `水面補正 ${first.weatherImpact >= 0 ? "+" : ""}${first.weatherImpact.toFixed(1)}`
@@ -1065,6 +1182,39 @@ function renderRace(data) {
       <td class="racer-comment"><b>AI要約</b>${racer.comment}</td>
     </tr>
   `).join("");
+}
+
+function getManshuResults() {
+  return Array.from({ length: 12 }, (_, index) => {
+    const race = index + 1;
+    const official = getVerifiedResult(race);
+    return official && official.payout >= 10000
+      ? { race, ...official }
+      : null;
+  }).filter(Boolean);
+}
+
+function renderManshuBanner() {
+  const banner = document.querySelector("#rainbowManshuBanner");
+  if (!banner) return;
+  const manshu = getManshuResults();
+  if (!manshu.length) {
+    banner.hidden = true;
+    banner.innerHTML = "";
+    return;
+  }
+  const top = [...manshu].sort((a, b) => b.payout - a.payout)[0];
+  banner.hidden = false;
+  banner.innerHTML = `
+    <div>
+      <p class="eyebrow">MANSHU ALERT</p>
+      <strong>万舟発生 ${manshu.length}本</strong>
+      <span>最高 ${top.race}R ${top.result.join("-")} / ${top.payout.toLocaleString("ja-JP")}円</span>
+    </div>
+    <div class="manshu-list">
+      ${manshu.map((item) => `<b>${item.race}R ${item.result.join("-")} ${item.payout.toLocaleString("ja-JP")}円</b>`).join("")}
+    </div>
+  `;
 }
 
 function renderOfficialSignal(data) {
@@ -1196,6 +1346,7 @@ function buildLeaderFormationPicks(scoredPicks, data, leader) {
         + racer.officialSignal * .08
         + racer.exhibitionImpact * 2.2
         + racer.weatherImpact * 1.2
+        + racer.venueImpact * 1.5
         + (racer.motor - 35) * .12
         + (0.18 - racer.start) * 20
     }))
@@ -1379,6 +1530,7 @@ function buildTicketCandidates(data) {
       return sum + (
         racer.exhibitionImpact * 1.8
         + racer.weatherImpact * 1.1
+        + racer.venueImpact * 1.35
         + (racer.motor - 35) * .08
         + (0.18 - racer.start) * 18
       ) * orderWeight;
@@ -1446,11 +1598,14 @@ function renderValuePicks(data) {
 }
 
 function buildRaceRanking(data) {
+  const profile = data.venueProfile || getVenueCourseProfile(data.venue);
   return Array.from({ length: 12 }, (_, index) => {
     const race = index + 1;
     const random = seededRandom(hashString(`${data.venue.name}-${dateInput.value}-${race}-pickup`));
-    const laneOneStrength = clamp(43 + random() * 47 - data.wind * 1.2, 31, 88);
-    const upsetStrength = clamp(100 - laneOneStrength + random() * 18, 18, 81);
+    const venueInnerPenalty = profile.innerPenalty || 0;
+    const venueInnerBoost = profile.innerBoost || 0;
+    const laneOneStrength = clamp(43 + random() * 47 - data.wind * 1.2 - venueInnerPenalty * 2.8 + venueInnerBoost * 2.4, 22, 92);
+    const upsetStrength = clamp(100 - laneOneStrength + random() * 18 + (profile.upsetBonus || 0), 18, 92);
     return { race, solid: laneOneStrength, upset: upsetStrength };
   });
 }
