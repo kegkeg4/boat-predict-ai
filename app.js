@@ -1184,12 +1184,16 @@ function renderRace(data) {
   `).join("");
 }
 
-function getManshuResults() {
+function getHighPayoutHits() {
   return Array.from({ length: 12 }, (_, index) => {
     const race = index + 1;
     const official = getVerifiedResult(race);
-    return official && official.payout >= 10000
-      ? { race, ...official }
+    const prediction = getPrimaryPredictionForRace(race);
+    if (!official || !prediction) return null;
+    const resultKey = official.result.join("-");
+    const hitPick = prediction.picks.find((pick) => pick.ticket.join("-") === resultKey);
+    return hitPick && official.payout >= 5000
+      ? { race, ...official, hitPick }
       : null;
   }).filter(Boolean);
 }
@@ -1197,22 +1201,25 @@ function getManshuResults() {
 function renderManshuBanner() {
   const banner = document.querySelector("#rainbowManshuBanner");
   if (!banner) return;
-  const manshu = getManshuResults();
-  if (!manshu.length) {
+  const hits = getHighPayoutHits();
+  if (!hits.length) {
     banner.hidden = true;
     banner.innerHTML = "";
     return;
   }
-  const top = [...manshu].sort((a, b) => b.payout - a.payout)[0];
+  const top = [...hits].sort((a, b) => b.payout - a.payout)[0];
+  const hasManshu = top.payout >= 10000;
+  const bannerClass = hasManshu ? "rainbow-manshu-banner manshu" : "rainbow-manshu-banner gold-hit-banner";
+  banner.className = bannerClass;
   banner.hidden = false;
   banner.innerHTML = `
     <div>
-      <p class="eyebrow">MANSHU ALERT</p>
-      <strong>万舟発生 ${manshu.length}本</strong>
+      <p class="eyebrow">${hasManshu ? "MANSHU HIT" : "HIGH PAYOUT HIT"}</p>
+      <strong>${hasManshu ? "万舟的中" : "50倍超え的中"} ${hits.length}本</strong>
       <span>最高 ${top.race}R ${top.result.join("-")} / ${top.payout.toLocaleString("ja-JP")}円</span>
     </div>
     <div class="manshu-list">
-      ${manshu.map((item) => `<b>${item.race}R ${item.result.join("-")} ${item.payout.toLocaleString("ja-JP")}円</b>`).join("")}
+      ${hits.map((item) => `<b>${item.race}R ${item.result.join("-")} ${item.payout.toLocaleString("ja-JP")}円</b>`).join("")}
     </div>
   `;
 }
