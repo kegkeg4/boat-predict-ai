@@ -158,6 +158,7 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 }
 .field input:focus, .field select:focus { border-color: #7ab9ff; box-shadow: 0 0 0 3px rgba(8,119,249,.08); }
 .field-label small { margin-left: 6px; color: #9aa8b5; font-size: 8px; font-weight: 500; }
+.venue-status-hint { display: block; margin-top: 6px; color: #0a9a70; font-size: 8px; font-weight: 800; letter-spacing: .02em; }
 .recent-dates { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin-top: 6px; }
 .recent-date { min-width: 0; padding: 5px 3px; border: 1px solid #dce4ec; border-radius: 5px; color: #7b8b9c; background: #f8fafc; font-size: 7px; line-height: 1.2; }
 .recent-date span, .recent-date b { display: block; white-space: nowrap; }

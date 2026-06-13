@@ -98,6 +98,7 @@ const venueCourseProfiles = {
 const OFFICIAL_SIGNAL_WEIGHT = .35;
 const PROGRAM_CACHE_KEY = "boat-predict-official-programs-v1";
 const LEARNING_LOG_KEY = "boat-predict-learning-log-v1";
+const LEARNING_WEIGHTS_KEY = "boat-predict-learning-weights-v1";
 const PLAN_MODE_KEY = "boat-predict-plan-mode";
 const PROGRAM_CACHE_MS = 6 * 60 * 60 * 1000;
 const PERFORMANCE_BET_UNIT_YEN = 100;
@@ -229,11 +230,22 @@ let selectedResultRefreshInFlight = false;
 let performanceRenderTimer = null;
 let performanceCache = { key: "", totals: null };
 let isPremiumMode = localStorage.getItem(PLAN_MODE_KEY) === "premium";
+let venueStatusByDate = {};
 const dynamicPrograms = loadStoredPrograms();
 const dynamicResults = {};
 const dynamicRaceSignals = {};
 const resultUnavailableCache = {};
 const resultRequestCache = {};
+const postedLearningEventKeys = new Set();
+let learningWeights = loadStoredLearningWeights();
+
+function loadStoredLearningWeights() {
+  try {
+    return JSON.parse(localStorage.getItem(LEARNING_WEIGHTS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
 
 function loadStoredPrograms() {
   try {
@@ -271,11 +283,11 @@ function createTimeoutError() {
 }
 
 async function fetchWithTimeout(url, options = {}) {
-  const { signal, timeoutMs = REQUEST_TIMEOUT_MS } = options;
+  const { signal, timeoutMs = REQUEST_TIMEOUT_MS, ...fetchOptions } = options;
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
   let timeoutId;
   return Promise.race([
-    fetch(url, { signal }),
+    fetch(url, { ...fetchOptions, signal }),
     new Promise((_, reject) => {
       timeoutId = setTimeout(() => reject(createTimeoutError()), timeoutMs);
     })
@@ -284,6 +296,45 @@ async function fetchWithTimeout(url, options = {}) {
 
 function invalidatePerformanceCache() {
   performanceCache = { key: "", totals: null };
+}
+
+async function loadLearningWeights() {
+  try {
+    const response = await fetchWithTimeout("/api/learning", { timeoutMs: 5000 });
+    if (!response.ok) throw new Error(`learning ${response.status}`);
+    const payload = await response.json();
+    learningWeights = payload.weights || {};
+    localStorage.setItem(LEARNING_WEIGHTS_KEY, JSON.stringify(learningWeights));
+    invalidatePerformanceCache();
+    if (currentData) {
+      const updatedData = buildRaceData();
+      if (updatedData) {
+        currentData = updatedData;
+        renderRace(updatedData);
+      }
+    }
+  } catch (error) {
+    if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
+  }
+}
+
+async function postLearningEvents(events) {
+  if (!events.length) return;
+  try {
+    const response = await fetchWithTimeout("/api/learning", {
+      method: "POST",
+      timeoutMs: 6000,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ events })
+    });
+    if (!response.ok) throw new Error(`learning post ${response.status}`);
+    const payload = await response.json();
+    learningWeights = payload.weights || learningWeights;
+    localStorage.setItem(LEARNING_WEIGHTS_KEY, JSON.stringify(learningWeights));
+    invalidatePerformanceCache();
+  } catch (error) {
+    if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
+  }
 }
 
 function setPlanMode(mode) {
@@ -533,6 +584,45 @@ function renderRecentDates() {
   });
 }
 
+function renderVenueOptions() {
+  const selected = venueSelect.value || "0";
+  const statuses = venueStatusByDate[dateInput.value] || {};
+  const statusValues = Object.values(statuses);
+  const activeCount = statusValues.filter((status) => status.available).length;
+  venueSelect.innerHTML = "";
+  venues.forEach((venue, index) => {
+    const jcd = String(index + 1).padStart(2, "0");
+    const status = statuses[jcd];
+    const marker = status?.available ? "● " : status ? "　 " : "";
+    const suffix = status?.available ? "（本日開催）" : "";
+    const option = document.createElement("option");
+    option.value = index;
+    option.textContent = `${marker}${String(index + 1).padStart(2, "0")} ${venue.name}${suffix}`;
+    option.dataset.available = status?.available ? "true" : "false";
+    venueSelect.append(option);
+  });
+  venueSelect.value = selected;
+  const hint = document.querySelector("#venueStatusHint");
+  if (hint) {
+    hint.textContent = statusValues.length
+      ? `● 開催あり ${activeCount}場 / ${formatDate(dateInput.value)}`
+      : "開催場を確認中...";
+  }
+}
+
+async function refreshVenueStatus(date = dateInput.value) {
+  if (!date) return;
+  try {
+    const response = await fetchWithTimeout(`/api/venues?date=${encodeURIComponent(date)}`, { timeoutMs: 12000 });
+    if (!response.ok) throw new Error(`venues ${response.status}`);
+    const payload = await response.json();
+    venueStatusByDate[date] = payload.venues || {};
+    if (date === dateInput.value) renderVenueOptions();
+  } catch (error) {
+    if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
+  }
+}
+
 function boatBadge(number, small = false) {
   return `<span class="${small ? "table-boat" : "ticket-boat"} boat-${number}">${number}</span>`;
 }
@@ -646,12 +736,7 @@ function permutations(items, length) {
 }
 
 function setupControls() {
-  venues.forEach((venue, index) => {
-    const option = document.createElement("option");
-    option.value = index;
-    option.textContent = `${String(index + 1).padStart(2, "0")}  ${venue.name}`;
-    venueSelect.append(option);
-  });
+  renderVenueOptions();
   venueSelect.value = "0";
 
   const today = new Date();
@@ -664,6 +749,8 @@ function setupControls() {
   dateInput.max = toInputDate(tomorrow);
   dateInput.value = isDayCompleted(todayString) ? toInputDate(tomorrow) : todayString;
   dateInput.addEventListener("change", () => {
+    renderVenueOptions();
+    refreshVenueStatus(dateInput.value);
     renderRecentDates();
     updateRaceButtonStates();
     updateActionButton();
@@ -691,6 +778,7 @@ function setupControls() {
     raceSelector.append(button);
   }
   renderRecentDates();
+  refreshVenueStatus(dateInput.value);
   updateRaceButtonStates();
 }
 
@@ -886,6 +974,7 @@ function buildRaceData(race = selectedRace) {
   const temperature = Number.isFinite(officialWeather.temperature) ? officialWeather.temperature : null;
   const direction = officialWeather.windDirection || "";
   const venueProfile = getVenueCourseProfile(venue);
+  const learnedVenue = learningWeights[venue.name] || {};
   const phase = getPredictionPhase(race);
   const hasExhibition = officialRace.racers.every((racer) =>
     Number.isFinite(beforeinfo[racer.boat]?.exhibition)
@@ -904,6 +993,9 @@ function buildRaceData(race = selectedRace) {
     const courseBase = [26, 17, 13, 10, 7, 5][boat - 1];
     const weatherImpact = calculateWeatherImpact(boat, wind, wave, direction, weather.label);
     const venueImpact = calculateVenueCourseImpact(venue, boat, wind, wave);
+    const learningImpact = boat === 1
+      ? -(learnedVenue.innerPenaltyAdjust || 0)
+      : boat >= 3 ? (learnedVenue.thirdCoverageBoost || 0) * .35 : 0;
     const localBoost = (local - national) * 3.2 * venue.home;
     const gradeBoost = grade === "A1" ? 7 : grade === "A2" ? 3 : grade === "B2" ? -2 : 0;
     const baseModelScore = courseBase
@@ -914,7 +1006,8 @@ function buildRaceData(race = selectedRace) {
       + localBoost
       + (0.18 - start) * 26
       + weatherImpact.score
-      + venueImpact.score;
+      + venueImpact.score
+      + learningImpact;
     const exhibitionImpact = phase.exhibitionAvailable
       ? clamp((6.78 - exhibition) * 48, -6, 7)
       : 0;
@@ -942,6 +1035,7 @@ function buildRaceData(race = selectedRace) {
       weatherNote: weatherImpact.note,
       venueImpact: venueImpact.score,
       venueNote: venueImpact.note,
+      learningImpact,
       tilt: live.tilt,
       parts: live.parts,
       condition,
@@ -1015,6 +1109,7 @@ function buildRaceData(race = selectedRace) {
     signals,
     oddsMap,
     venueProfile,
+    learnedVenue,
     ranking: [...racers].sort((a, b) => b.rawScore - a.rawScore),
     officialOrder
   };
@@ -1159,6 +1254,9 @@ function renderRace(data) {
     Number.isFinite(wave) ? `公式波高 ${wave.toFixed(0)}cm` : "波未取得",
     data.signals?.odds?.available ? "公式オッズ反映" : "オッズ未取得"
   ];
+  if (data.learnedVenue?.samples) {
+    factors.unshift(`学習補正 ${data.learnedVenue.samples}件 / 3着補正 +${(data.learnedVenue.thirdCoverageBoost || 0).toFixed(1)}`);
+  }
   if (profile.key === "watch") factors.unshift("資金管理 見送り候補");
   if (profile.key === "go") factors.unshift("資金管理 勝負候補");
   document.querySelector("#keyFactors").innerHTML = factors.map((factor) => `<span class="factor">${factor}</span>`).join("");
@@ -1400,6 +1498,7 @@ function buildTicketStrategyGroups(data) {
   const officialBoats = new Set(data.officialOrder.slice(0, 3).map((racer) => racer.boat));
   const laneOne = data.racers.find((racer) => racer.boat === 1);
   const predictedLeader = data.ranking[0];
+  const learned = data.learnedVenue || {};
   const upsetSignal = laneOne ? 100 - laneOne.probability : 50;
   const withScores = candidates.map((pick) => {
     const agreement = pick.ticket.filter((racer) => officialBoats.has(racer.boat)).length;
@@ -1424,9 +1523,9 @@ function buildTicketStrategyGroups(data) {
       lowProbabilityBonus,
       edgeBonus,
       torigamiPenalty,
-      honmeiScore: pick.valueScore * 1.45 + pick.probability * 2.1 + agreement * 3 + topCount * 1.4 + pick.footScore * 1.2 - torigamiPenalty,
-      neraiScore: pick.valueScore * 1.8 + edgeBonus * 1.4 + oddsScore * 8 + topCount * 2 + pick.footScore * 1.5 - Math.abs(pick.probability - 1.8) * 3,
-      anaScore: pick.valueScore * .95 + oddsScore * 16 + lowProbabilityBonus * 8 + popularityRisk * 1.4 + outsideCount * 5 + Math.max(0, upsetSignal - 65) * .7 - favoriteCount * 3 - agreement * 1.2
+      honmeiScore: pick.valueScore * 1.45 + pick.probability * 2.1 + agreement * 3 + topCount * 1.4 + pick.footScore * 1.2 + (learned.thirdCoverageBoost || 0) * .8 - torigamiPenalty,
+      neraiScore: pick.valueScore * (1.8 + (learned.valueBoost || 0) * .08) + edgeBonus * 1.4 + oddsScore * 8 + topCount * 2 + pick.footScore * 1.5 - Math.abs(pick.probability - 1.8) * 3,
+      anaScore: pick.valueScore * (.95 + (learned.valueBoost || 0) * .06) + oddsScore * 16 + lowProbabilityBonus * 8 + popularityRisk * 1.4 + outsideCount * 5 + Math.max(0, upsetSignal - 65) * .7 - favoriteCount * 3 - agreement * 1.2
     };
   });
   const usedKeys = new Set();
@@ -1848,22 +1947,38 @@ function saveLearningLog(rows) {
     stored = {};
   }
   const venue = venues[Number(venueSelect.value)].name;
+  const serverEvents = [];
   judgedRows.forEach((row) => {
     const key = `${dateInput.value}-${venue}-${row.race}`;
-    stored[key] = {
+    const predictedLeader = row.prediction.picks[0]?.ticket?.[0] || row.prediction.data?.ranking?.[0]?.boat || null;
+    const event = {
+      key,
       date: dateInput.value,
       venue,
       race: row.race,
       result: row.official.result,
       payout: row.official.payout,
       picks: row.prediction.picks,
+      predictedLeader,
+      weather: row.prediction.data?.weather?.label,
+      wind: row.prediction.data?.wind,
+      wave: row.prediction.data?.wave,
+      phase: row.prediction.data?.phase?.key,
       hitIndex: row.hitIndex,
       exactaHit: row.exactaHit,
       leaderHit: row.leaderHit,
       savedAt: new Date().toISOString()
     };
+    stored[key] = {
+      ...event
+    };
+    if (!postedLearningEventKeys.has(key)) {
+      postedLearningEventKeys.add(key);
+      serverEvents.push(event);
+    }
   });
   localStorage.setItem(LEARNING_LOG_KEY, JSON.stringify(stored));
+  postLearningEvents(serverEvents);
 }
 
 function renderDailyPerformance(options = {}) {
@@ -2138,6 +2253,7 @@ async function refreshOfficialResult(data, requestId) {
 
 setupControls();
 applyPlanMode();
+loadLearningWeights();
 runPrediction(true);
 refreshWarmupStatus();
 setInterval(refreshWarmupStatus, 60000);

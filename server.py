@@ -20,6 +20,7 @@ USER_AGENT = "Mozilla/5.0 BOAT-PREDICT-AI/1.0"
 CACHE_SECONDS = 21600
 CACHE_DIR = Path(__file__).with_name(".official-cache")
 PROGRAM_CACHE_FILE = CACHE_DIR / "programs.json"
+LEARNING_FILE = CACHE_DIR / "learning.json"
 JST = timezone(timedelta(hours=9))
 BOATRACE_JCDS = [f"{number:02d}" for number in range(1, 25)]
 cache = {}
@@ -40,6 +41,98 @@ warmup_status = {
     "startedAt": None,
     "finishedAt": None,
 }
+learning_lock = threading.Lock()
+
+
+def read_learning_store():
+    try:
+        return json.loads(LEARNING_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {"events": {}, "weights": {}, "updatedAt": None}
+
+
+def save_learning_store(store):
+    CACHE_DIR.mkdir(exist_ok=True)
+    temporary = LEARNING_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(store, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(LEARNING_FILE)
+
+
+def recompute_learning_weights(events):
+    venue_stats = {}
+    for event in events.values():
+        venue = event.get("venue") or ""
+        if not venue:
+            continue
+        stats = venue_stats.setdefault(
+            venue,
+            {
+                "races": 0,
+                "hits": 0,
+                "leaderHits": 0,
+                "exactaHits": 0,
+                "innerOverrated": 0,
+                "thirdMisses": 0,
+                "highPayoutHits": 0,
+            },
+        )
+        stats["races"] += 1
+        if event.get("hitIndex", -1) >= 0:
+            stats["hits"] += 1
+        if event.get("leaderHit"):
+            stats["leaderHits"] += 1
+        if event.get("exactaHit"):
+            stats["exactaHits"] += 1
+        result = event.get("result") or []
+        predicted_leader = event.get("predictedLeader")
+        if predicted_leader == 1 and result and result[0] != 1:
+            stats["innerOverrated"] += 1
+        if event.get("exactaHit") and event.get("hitIndex", -1) < 0:
+            stats["thirdMisses"] += 1
+        if event.get("hitIndex", -1) >= 0 and event.get("payout", 0) >= 5000:
+            stats["highPayoutHits"] += 1
+    weights = {}
+    for venue, stats in venue_stats.items():
+        races = max(1, stats["races"])
+        weights[venue] = {
+            "samples": stats["races"],
+            "hitRate": round(stats["hits"] / races, 4),
+            "leaderHitRate": round(stats["leaderHits"] / races, 4),
+            "exactaHitRate": round(stats["exactaHits"] / races, 4),
+            "innerPenaltyAdjust": round(min(3, stats["innerOverrated"] / races * 6), 3),
+            "thirdCoverageBoost": round(min(3, stats["thirdMisses"] / races * 5), 3),
+            "valueBoost": round(min(2, stats["highPayoutHits"] / races * 4), 3),
+        }
+    return weights
+
+
+def get_learning():
+    with learning_lock:
+        store = read_learning_store()
+    return {
+        "updatedAt": store.get("updatedAt"),
+        "weights": store.get("weights", {}),
+        "events": len(store.get("events", {})),
+    }
+
+
+def record_learning_events(events):
+    if not isinstance(events, list):
+        return {"error": "events must be list"}
+    with learning_lock:
+        store = read_learning_store()
+        stored_events = store.setdefault("events", {})
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            key = event.get("key")
+            if not key:
+                continue
+            stored_events[key] = event
+        store["weights"] = recompute_learning_weights(stored_events)
+        store["updatedAt"] = datetime.now(JST).isoformat(timespec="seconds")
+        save_learning_store(store)
+    return get_learning()
 
 
 def read_program_cache():
@@ -739,6 +832,45 @@ def load_results(date, jcd):
     }
 
 
+def load_venues_status(date):
+    compact_date = date.replace("-", "")
+    venues_status = {}
+    now = time.time()
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {}
+        for jcd in BOATRACE_JCDS:
+            program_key = f"{date}-{jcd}"
+            with program_cache_lock:
+                stored = program_cache.get(program_key)
+                if stored and now - stored.get("savedAt", 0) < CACHE_SECONDS:
+                    payload = stored.get("payload", {})
+                    venues_status[jcd] = {
+                        "jcd": jcd,
+                        "available": bool(payload.get("available")),
+                        "races": len(payload.get("races", [])),
+                        "cached": True,
+                    }
+                    continue
+            path = f"/owpc/pc/race/raceindex?hd={compact_date}&jcd={jcd}"
+            futures[executor.submit(fetch_html, path): jcd] = jcd
+        for future in as_completed(futures):
+            jcd = futures[future]
+            try:
+                races = parse_race_index(future.result())
+            except Exception:
+                races = []
+            venues_status[jcd] = {
+                "jcd": jcd,
+                "available": bool(races),
+                "races": len(races),
+                "cached": False,
+            }
+    return {
+        "date": date,
+        "venues": venues_status,
+    }
+
+
 class AppHandler(SimpleHTTPRequestHandler):
     def end_headers(self):
         if self.path == "/" or self.path.endswith((".html", ".js", ".css")):
@@ -749,13 +881,22 @@ class AppHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/warmup":
             return self.send_json(get_warmup_status())
-        if parsed.path not in ("/api/program", "/api/result", "/api/results", "/api/signals"):
+        if parsed.path == "/api/learning":
+            return self.send_json(get_learning())
+        if parsed.path not in ("/api/program", "/api/result", "/api/results", "/api/signals", "/api/venues"):
             return super().do_GET()
         query = parse_qs(parsed.query)
         date = query.get("date", [""])[0]
         jcd = query.get("jcd", [""])[0].zfill(2)
         race = query.get("race", ["1"])[0]
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) or not re.fullmatch(r"\d{2}", jcd):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            return self.send_json({"error": "invalid parameters"}, 400)
+        if parsed.path == "/api/venues":
+            try:
+                return self.send_json(load_venues_status(date))
+            except Exception as error:
+                return self.send_json({"error": str(error)}, 502)
+        if not re.fullmatch(r"\d{2}", jcd):
             return self.send_json({"error": "invalid parameters"}, 400)
         if parsed.path != "/api/results" and (
             not race.isdigit() or not 1 <= int(race) <= 12
@@ -772,6 +913,18 @@ class AppHandler(SimpleHTTPRequestHandler):
                 self.send_json(load_program(date, jcd, int(race)))
         except Exception as error:
             self.send_json({"error": str(error)}, 502)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/learning":
+            return self.send_json({"error": "not found"}, 404)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length).decode("utf-8")
+            payload = json.loads(body or "{}")
+            self.send_json(record_learning_events(payload.get("events", [])))
+        except Exception as error:
+            self.send_json({"error": str(error)}, 400)
 
     def send_json(self, payload, status=200):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
