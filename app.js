@@ -1012,8 +1012,14 @@ function renderRace(data) {
   const leadComment = first.boat === 1
     ? `1号艇 ${first.name}のイン先行を中心に予測。`
     : `${first.boat}号艇 ${first.name}の当地適性と機力を高く評価。`;
+  const turnComment = first.boat === 1
+    ? `第一ターンは1号艇の先マイ、${second.boat}号艇の差し残りを本線に見ます。`
+    : first.boat <= 3
+      ? `第一ターンは${first.boat}号艇の差し・まくり差しが決まる展開を想定。`
+      : `第一ターンは外の攻めで隊形が崩れる展開を想定し、内の残りと外の連動を評価します。`;
+  const profile = buildInvestmentProfile(data);
   document.querySelector("#scenarioText").textContent =
-    `${leadComment}${windComment}${second.boat}号艇がスタートから追走し、2・3着争いの軸になる展開を想定しています。`;
+    `${leadComment}${windComment}${turnComment}${profile.label}として、的中率だけでなく期待値と回収率を優先します。`;
 
   const factors = [
     `${first.boat}号艇 当地勝率 ${first.local.toFixed(2)}`,
@@ -1028,6 +1034,8 @@ function renderRace(data) {
     Number.isFinite(wave) ? `公式波高 ${wave.toFixed(0)}cm` : "波未取得",
     data.signals?.odds?.available ? "公式オッズ反映" : "オッズ未取得"
   ];
+  if (profile.key === "watch") factors.unshift("資金管理 見送り候補");
+  if (profile.key === "go") factors.unshift("資金管理 勝負候補");
   document.querySelector("#keyFactors").innerHTML = factors.map((factor) => `<span class="factor">${factor}</span>`).join("");
 
   renderValuePicks(data);
@@ -1182,6 +1190,8 @@ function buildTicketStrategyGroups(data) {
   const candidates = buildTicketCandidates(data);
   const topBoats = new Set(data.ranking.slice(0, 3).map((racer) => racer.boat));
   const officialBoats = new Set(data.officialOrder.slice(0, 3).map((racer) => racer.boat));
+  const laneOne = data.racers.find((racer) => racer.boat === 1);
+  const upsetSignal = laneOne ? 100 - laneOne.probability : 50;
   const withScores = candidates.map((pick) => {
     const agreement = pick.ticket.filter((racer) => officialBoats.has(racer.boat)).length;
     const topCount = pick.ticket.filter((racer) => topBoats.has(racer.boat)).length;
@@ -1191,6 +1201,8 @@ function buildTicketStrategyGroups(data) {
     const firstPopularity = pick.ticket[0].popularity;
     const oddsScore = Math.log(Math.max(2, pick.estimatedOdds));
     const lowProbabilityBonus = clamp(3.2 - pick.probability, 0, 3.2);
+    const edgeBonus = Math.max(0, pick.valueScore - 100);
+    const torigamiPenalty = pick.estimatedOdds < 7 ? (7 - pick.estimatedOdds) * 9 : 0;
     return {
       ...pick,
       agreement,
@@ -1201,20 +1213,23 @@ function buildTicketStrategyGroups(data) {
       firstPopularity,
       oddsScore,
       lowProbabilityBonus,
-      honmeiScore: pick.probability * 3.4 + agreement * 3 + topCount * 1.4 - oddsScore * .5,
-      neraiScore: pick.valueScore * 1.1 + oddsScore * 6 + topCount * 2 - Math.abs(pick.probability - 1.8) * 3,
-      anaScore: oddsScore * 14 + lowProbabilityBonus * 8 + popularityRisk * 1.4 + outsideCount * 5 - favoriteCount * 3 - agreement * 1.2
+      edgeBonus,
+      torigamiPenalty,
+      honmeiScore: pick.valueScore * 1.45 + pick.probability * 2.1 + agreement * 3 + topCount * 1.4 + pick.footScore * 1.2 - torigamiPenalty,
+      neraiScore: pick.valueScore * 1.8 + edgeBonus * 1.4 + oddsScore * 8 + topCount * 2 + pick.footScore * 1.5 - Math.abs(pick.probability - 1.8) * 3,
+      anaScore: pick.valueScore * .95 + oddsScore * 16 + lowProbabilityBonus * 8 + popularityRisk * 1.4 + outsideCount * 5 + Math.max(0, upsetSignal - 65) * .7 - favoriteCount * 3 - agreement * 1.2
     };
   });
   const usedKeys = new Set();
   const honmeiPool = [...withScores]
-    .filter((pick) => pick.estimatedOdds <= 35 || pick.probability >= 1.3)
+    .filter((pick) => pick.estimatedOdds >= 5 && (pick.valueScore >= 78 || pick.probability >= 1.5))
     .sort((a, b) => b.honmeiScore - a.honmeiScore);
   const honmei = ensurePickCount(honmeiPool, withScores, STRATEGY_CONFIG.honmei.count, usedKeys);
 
   const neraiPool = withScores
     .filter((pick) =>
-      pick.estimatedOdds >= 6
+      pick.valueScore >= 100
+      && pick.estimatedOdds >= 7
       && pick.estimatedOdds <= 80
       && pick.probability >= .55
       && pick.topCount >= 1
@@ -1227,8 +1242,10 @@ function buildTicketStrategyGroups(data) {
 
   const anaPool = withScores
     .filter((pick) =>
-      pick.estimatedOdds >= 25
+      pick.valueScore >= 85
+      && pick.estimatedOdds >= 25
       && pick.probability <= 2.4
+      && upsetSignal >= 58
       && (
         pick.outsideCount >= 1
         || pick.firstPopularity >= 3
@@ -1266,6 +1283,12 @@ function renderTicketStrategies(data) {
   renderTicketGroup("#solidTicket", "#solidSubTickets", honmei, "本命");
   renderTicketGroup("#aimTicket", "#aimSubTickets", nerai, "狙い目");
   renderTicketGroup("#upsetTicket", "#upsetSubTickets", ana, "穴");
+  const profile = buildInvestmentProfile(data);
+  const note = document.querySelector("#ticketStrategyNote");
+  if (note) {
+    note.textContent = `${profile.label}: ${profile.text}`;
+    note.className = `ticket-note ${profile.key}`;
+  }
 }
 
 function buildTicketCandidates(data) {
@@ -1296,9 +1319,49 @@ function buildTicketCandidates(data) {
     const marketChance = modelChance * .72 + rawMarketChance * .28;
     const estimatedOdds = actualOdds || clamp(.76 / marketChance, 2.1, 250);
     const valueScore = probability * estimatedOdds;
-    return { ticket, probability, estimatedOdds, valueScore, actualOdds: Boolean(actualOdds) };
+    const footScore = ticket.reduce((sum, racer, index) => {
+      const orderWeight = index === 0 ? 1.25 : index === 1 ? 1 : .8;
+      return sum + (
+        racer.exhibitionImpact * 1.8
+        + racer.weatherImpact * 1.1
+        + (racer.motor - 35) * .08
+        + (0.18 - racer.start) * 18
+      ) * orderWeight;
+    }, 0);
+    return { ticket, probability, estimatedOdds, valueScore, footScore, actualOdds: Boolean(actualOdds) };
   })
     .sort((a, b) => b.valueScore - a.valueScore);
+}
+
+function buildInvestmentProfile(data) {
+  const candidates = buildTicketCandidates(data);
+  const best = candidates[0] || null;
+  const positiveCount = candidates.filter((pick) => pick.valueScore >= 100 && pick.estimatedOdds >= 7).length;
+  const laneOne = data.racers.find((racer) => racer.boat === 1);
+  const leaderGap = data.ranking[0].probability - data.ranking[1].probability;
+  const waterRisk = (Number.isFinite(data.wind) ? data.wind : 0) + (Number.isFinite(data.wave) ? data.wave * .7 : 0);
+  if (!best) {
+    return { key: "watch", label: "見送り候補", text: "期待値を計算できる買い目がまだ不足しています。" };
+  }
+  if (best.valueScore >= 115 && positiveCount >= 3 && waterRisk <= 7) {
+    return {
+      key: "go",
+      label: "勝負候補",
+      text: `期待値${best.valueScore.toFixed(0)}、妙味候補${positiveCount}点。回収率重視で少点数に絞るレースです。`
+    };
+  }
+  if (best.valueScore >= 100 || (leaderGap >= 10 && laneOne?.probability >= 30)) {
+    return {
+      key: "selective",
+      label: "絞り候補",
+      text: `最高期待値${best.valueScore.toFixed(0)}。本命寄りはトリガミを避け、オッズ確認後に買い目を絞ります。`
+    };
+  }
+  return {
+    key: "watch",
+    label: "見送り候補",
+    text: `最高期待値${best.valueScore.toFixed(0)}。的中率より回収率を優先し、無理に全レース買わない判断です。`
+  };
 }
 
 function renderValuePicks(data) {
@@ -1315,7 +1378,7 @@ function renderValuePicks(data) {
         <div class="value-stat"><small>${pick.actualOdds ? "公式オッズ" : "推定オッズ"}</small><strong>${pick.estimatedOdds.toFixed(1)}</strong></div>
       </div>
       <div class="value-score"><span>期待値スコア</span><strong>${pick.valueScore.toFixed(0)}</strong></div>
-      <span class="value-judgement${pick.valueScore < 105 ? " watch" : ""}">${pick.valueScore >= 105 ? "妙味あり" : "比較候補"}</span>
+      <span class="value-judgement${pick.valueScore < 100 ? " watch" : ""}">${pick.valueScore >= 100 ? "期待値あり" : "見送り寄り"}</span>
     </article>
   `).join("") + (!isPremiumMode ? `
     <article class="value-pick locked-pick">
