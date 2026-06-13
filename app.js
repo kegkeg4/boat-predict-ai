@@ -226,6 +226,8 @@ let activeProgramController = null;
 let performanceRefreshTimer = null;
 let performanceRefreshInFlight = false;
 let selectedResultRefreshInFlight = false;
+let performanceRenderTimer = null;
+let performanceCache = { key: "", totals: null };
 let isPremiumMode = localStorage.getItem(PLAN_MODE_KEY) === "premium";
 const dynamicPrograms = loadStoredPrograms();
 const dynamicResults = {};
@@ -259,6 +261,7 @@ function storeProgram(key) {
   }
   stored[key] = { savedAt: Date.now(), program: dynamicPrograms[key] };
   localStorage.setItem(PROGRAM_CACHE_KEY, JSON.stringify(stored));
+  invalidatePerformanceCache();
 }
 
 function createTimeoutError() {
@@ -277,6 +280,10 @@ async function fetchWithTimeout(url, options = {}) {
       timeoutId = setTimeout(() => reject(createTimeoutError()), timeoutMs);
     })
   ]).finally(() => clearTimeout(timeoutId));
+}
+
+function invalidatePerformanceCache() {
+  performanceCache = { key: "", totals: null };
 }
 
 function setPlanMode(mode) {
@@ -830,6 +837,7 @@ function applyOfficialResultPayload(race, payload) {
   if (payload.available && isValidOfficialResult(payload.result)) {
     dynamicResults[key] = payload.result;
     delete resultUnavailableCache[key];
+    invalidatePerformanceCache();
     renderManshuBanner();
     return payload.result;
   }
@@ -1157,7 +1165,7 @@ function renderRace(data) {
 
   renderValuePicks(data);
   renderRaceRanking(data);
-  renderDailyPerformance();
+  renderDailyPerformance({ renderList: false });
   renderOfficialResult(data);
 
   document.querySelector("#racerTable").innerHTML = racers.map((racer) => `
@@ -1745,6 +1753,30 @@ function calculateDailyPerformance() {
   return totals;
 }
 
+function getPerformanceCacheKey() {
+  const program = dynamicPrograms[getProgramKey()];
+  const detailedRaces = program?.races
+    ?.filter((race) => race.detailed)
+    .map((race) => race.race)
+    .join(",") || "";
+  const resultKey = Array.from({ length: 12 }, (_, index) => {
+    const race = index + 1;
+    const result = getVerifiedResult(race);
+    return result ? `${race}:${result.result.join("-")}:${result.payout}` : `${race}:none`;
+  }).join("|");
+  return `${dateInput.value}-${venueSelect.value}-${detailedRaces}-${resultKey}-${isPremiumMode ? "premium" : "free"}`;
+}
+
+function getDailyPerformanceTotals() {
+  const key = getPerformanceCacheKey();
+  if (performanceCache.key === key && performanceCache.totals) {
+    return performanceCache.totals;
+  }
+  const totals = calculateDailyPerformance();
+  performanceCache = { key, totals };
+  return totals;
+}
+
 function renderTicketText(ticket) {
   return ticket.join("-");
 }
@@ -1834,8 +1866,9 @@ function saveLearningLog(rows) {
   localStorage.setItem(LEARNING_LOG_KEY, JSON.stringify(stored));
 }
 
-function renderDailyPerformance() {
-  const totals = calculateDailyPerformance();
+function renderDailyPerformance(options = {}) {
+  const { renderList = true } = options;
+  const totals = getDailyPerformanceTotals();
   const exactRate = totals.judged ? Math.round(totals.exactHits / totals.judged * 100) : 0;
   const exactaRate = totals.judged ? Math.round(totals.exactaHits / totals.judged * 100) : 0;
   const leaderRate = totals.judged ? Math.round(totals.leaderHits / totals.judged * 100) : 0;
@@ -1883,7 +1916,12 @@ function renderDailyPerformance() {
   document.querySelector("#simulatedProfitNote").textContent =
     `判定済み${totals.judged}レースで、本命だけは5点、狙い目だけ・穴だけは各1点を${PERFORMANCE_BET_UNIT_YEN}円ずつ購入した場合の仮想収支です。払戻は公式3連単の100円あたり払戻で計算しています。`;
   saveLearningLog(totals.rows);
-  renderPerformanceRaceList(totals.rows);
+  if (renderList) renderPerformanceRaceList(totals.rows);
+}
+
+function schedulePerformanceRender(options = {}) {
+  clearTimeout(performanceRenderTimer);
+  performanceRenderTimer = setTimeout(() => renderDailyPerformance(options), 120);
 }
 
 async function runWithConcurrency(items, limit, worker, afterEach) {
@@ -1900,16 +1938,16 @@ async function runWithConcurrency(items, limit, worker, afterEach) {
 
 async function refreshDailyPerformanceResults(requestId) {
   if (performanceRefreshInFlight) {
-    renderDailyPerformance();
+    renderDailyPerformance({ renderList: false });
     return;
   }
   performanceRefreshInFlight = true;
   const allRaces = Array.from({ length: 12 }, (_, index) => index + 1);
   try {
-    renderDailyPerformance();
+    renderDailyPerformance({ renderList: false });
 
     const completedRaces = allRaces
-      .filter((race) => isRaceCompleted(race) && getPrimaryPredictionForRace(race) && !getVerifiedResult(race));
+      .filter((race) => isRaceCompleted(race) && getOfficialProgramRace(race)?.detailed && !getVerifiedResult(race));
     if (completedRaces.length) {
       await loadOfficialResultsForDay(activeProgramController.signal).catch((error) => {
         if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
@@ -1917,11 +1955,11 @@ async function refreshDailyPerformanceResults(requestId) {
       });
       if (requestId !== predictionRequestId) return;
       updateRaceButtonStates();
-      renderDailyPerformance();
+      renderDailyPerformance({ renderList: false });
     }
 
     const remainingResultRaces = allRaces
-      .filter((race) => isRaceCompleted(race) && getPrimaryPredictionForRace(race) && !getVerifiedResult(race));
+      .filter((race) => isRaceCompleted(race) && getOfficialProgramRace(race)?.detailed && !getVerifiedResult(race));
     if (remainingResultRaces.length) {
       await runWithConcurrency(
         remainingResultRaces,
@@ -1933,12 +1971,12 @@ async function refreshDailyPerformanceResults(requestId) {
           });
         },
         () => {
-          if (requestId === predictionRequestId) renderDailyPerformance();
+          if (requestId === predictionRequestId) schedulePerformanceRender({ renderList: false });
         }
       );
       if (requestId !== predictionRequestId) return;
       updateRaceButtonStates();
-      renderDailyPerformance();
+      renderDailyPerformance({ renderList: false });
     }
 
     const key = getProgramKey();
@@ -1956,7 +1994,7 @@ async function refreshDailyPerformanceResults(requestId) {
         });
       },
       () => {
-        if (requestId === predictionRequestId) renderDailyPerformance();
+        if (requestId === predictionRequestId) schedulePerformanceRender({ renderList: false });
       }
     );
     if (requestId !== predictionRequestId) return;
@@ -1967,7 +2005,8 @@ async function refreshDailyPerformanceResults(requestId) {
 }
 
 function scheduleDailyPerformanceRefresh(requestId) {
-  renderDailyPerformance();
+  renderDailyPerformance({ renderList: false });
+  schedulePerformanceRender({ renderList: true });
   if (!isPremiumMode) {
     return;
   }
