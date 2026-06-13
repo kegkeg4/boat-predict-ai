@@ -377,7 +377,10 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .sub-ticket-combo i { color: #91a0af; font-style: normal; }
 .sub-ticket small { color: #8e9cac; font-size: 7px; white-space: nowrap; }
 .sub-ticket.locked { color: #8796a6; background: #f2f5f8; border-style: dashed; }
-.ticket-note { margin: 11px 0 0; color: #9aa7b4; font-size: 9px; line-height: 1.5; }
+.ticket-note { margin: 11px 0 0; padding: 9px 10px; border-radius: 8px; color: #738296; background: #f3f7fb; font-size: 9px; line-height: 1.5; }
+.ticket-note.go { color: #0b8060; background: #e9faf4; }
+.ticket-note.selective { color: #8a6810; background: #fff7df; }
+.ticket-note.watch { color: #9b4956; background: #fff0f2; }
 .spark-icon { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: linear-gradient(135deg, #1688ff, #04c2d6); }
 .scenario-text { margin: 14px 0 12px; color: #485d72; font-size: 11px; line-height: 1.75; }
 .factor-list { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -453,12 +456,14 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .daily-performance-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .daily-performance h3, .performance-card h2 { margin: 0; font-size: 15px; letter-spacing: -.02em; }
 .daily-performance-head > span { padding: 5px 8px; border-radius: 5px; color: #0877f9; background: #eaf4ff; font-size: 9px; font-weight: 700; white-space: nowrap; }
-.daily-performance-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.daily-performance-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
 .daily-stat { padding: 11px; border: 1px solid #e4ebf2; border-radius: 8px; background: #fff; }
 .daily-stat small { display: block; margin-bottom: 5px; color: #8b99a8; font-size: 8px; font-weight: 700; }
 .daily-stat strong { margin-right: 4px; color: #13243a; font-size: 22px; line-height: 1; }
 .daily-stat span { color: #8e9bab; font-size: 9px; font-weight: 700; }
 .daily-stat.hit strong { color: #0a9a70; }
+.daily-stat.target strong { color: #d27a1f; }
+.daily-stat.quinella strong { color: #8a63d2; }
 .daily-stat.axis strong { color: #0877f9; }
 .daily-performance-note { margin: 10px 0 0; color: #8b99a8; font-size: 9px; line-height: 1.5; }
 .learning-note { margin: 0 0 14px; padding: 11px 13px; border-radius: 8px; color: #53677b; background: #f5f8fb; font-size: 10px; line-height: 1.65; }

@@ -1186,6 +1186,48 @@ function ensurePickCount(primary, fallback, count, usedKeys) {
   return selected;
 }
 
+function buildLeaderFormationPicks(scoredPicks, data, leader) {
+  if (!leader) return [];
+  const supportBoats = data.ranking
+    .filter((racer) => racer.boat !== leader.boat)
+    .map((racer) => ({
+      boat: racer.boat,
+      score: racer.probability * 2.4
+        + racer.officialSignal * .08
+        + racer.exhibitionImpact * 2.2
+        + racer.weatherImpact * 1.2
+        + (racer.motor - 35) * .12
+        + (0.18 - racer.start) * 20
+    }))
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.boat);
+  const findPick = (secondBoat, thirdBoat) => scoredPicks.find((pick) =>
+    pick.ticket[0].boat === leader.boat
+    && pick.ticket[1].boat === secondBoat
+    && pick.ticket[2].boat === thirdBoat
+  );
+  const secondCandidates = supportBoats.slice(0, 4);
+  const thirdCandidates = supportBoats.slice(0, 5);
+  const formation = [];
+  secondCandidates.forEach((secondBoat) => {
+    thirdCandidates.forEach((thirdBoat) => {
+      if (secondBoat === thirdBoat) return;
+      const pick = findPick(secondBoat, thirdBoat);
+      if (pick) formation.push(pick);
+    });
+  });
+  return formation.sort((a, b) => {
+    const aSecondRank = supportBoats.indexOf(a.ticket[1].boat);
+    const bSecondRank = supportBoats.indexOf(b.ticket[1].boat);
+    const aThirdRank = supportBoats.indexOf(a.ticket[2].boat);
+    const bThirdRank = supportBoats.indexOf(b.ticket[2].boat);
+    const aCoverage = (10 - aSecondRank * 2) + (7 - aThirdRank);
+    const bCoverage = (10 - bSecondRank * 2) + (7 - bThirdRank);
+    return (b.pairProbability * 3 + bCoverage + b.footScore * .8 + b.valueScore * .35)
+      - (a.pairProbability * 3 + aCoverage + a.footScore * .8 + a.valueScore * .35);
+  });
+}
+
 function buildTicketStrategyGroups(data) {
   const candidates = buildTicketCandidates(data);
   const topBoats = new Set(data.ranking.slice(0, 3).map((racer) => racer.boat));
@@ -1229,11 +1271,12 @@ function buildTicketStrategyGroups(data) {
       const bPair = b.pairProbability * 2.2 + b.footScore * 1.4 + b.valueScore * .55 - b.torigamiPenalty;
       return bPair - aPair;
     });
+  const leaderFormationPool = buildLeaderFormationPicks(withScores, data, predictedLeader);
   const honmeiPool = [...withScores]
     .filter((pick) => pick.estimatedOdds >= 5 && (pick.valueScore >= 78 || pick.probability >= 1.5))
     .sort((a, b) => b.honmeiScore - a.honmeiScore);
   const honmeiPrimary = predictedLeader.probability >= 24
-    ? [...leaderAxisPool, ...honmeiPool]
+    ? [...leaderFormationPool, ...leaderAxisPool, ...honmeiPool]
     : honmeiPool;
   const honmei = ensurePickCount(honmeiPrimary, withScores, STRATEGY_CONFIG.honmei.count, usedKeys);
 
@@ -1634,11 +1677,17 @@ function renderDailyPerformance() {
   const exactRate = totals.judged ? Math.round(totals.exactHits / totals.judged * 100) : 0;
   const exactaRate = totals.judged ? Math.round(totals.exactaHits / totals.judged * 100) : 0;
   const leaderRate = totals.judged ? Math.round(totals.leaderHits / totals.judged * 100) : 0;
+  const targetHits = totals.judged ? Math.ceil(totals.judged * .4) : 0;
+  const targetGap = Math.max(0, targetHits - totals.exactHits);
   const recoveryRate = totals.simulatedStake ? Math.round(totals.simulatedReturn / totals.simulatedStake * 100) : 0;
   document.querySelector("#dailyPredictedCount").textContent = totals.predicted;
   document.querySelector("#dailyJudgedCount").textContent = totals.judged;
   document.querySelector("#dailyExactHits").textContent = totals.exactHits;
   document.querySelector("#dailyExactRate").textContent = `${exactRate}%`;
+  document.querySelector("#dailyTargetGap").textContent = targetGap;
+  document.querySelector("#dailyTargetLabel").textContent = totals.judged
+    ? exactRate >= 40 ? "達成中" : `あと${targetGap}本`
+    : "集計待ち";
   document.querySelector("#dailyExactaHits").textContent = totals.exactaHits;
   document.querySelector("#dailyExactaRate").textContent = `${exactaRate}%`;
   document.querySelector("#dailyLeaderHits").textContent = totals.leaderHits;
