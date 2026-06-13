@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 OFFICIAL_BASE = "https://www.boatrace.jp"
 USER_AGENT = "Mozilla/5.0 BOAT-PREDICT-AI/1.0"
 CACHE_SECONDS = 21600
-CACHE_DIR = Path(__file__).with_name(".official-cache")
+CACHE_DIR = Path(os.environ.get("BOAT_DATA_DIR", Path(__file__).with_name(".official-cache")))
 PROGRAM_CACHE_FILE = CACHE_DIR / "programs.json"
 LEARNING_FILE = CACHE_DIR / "learning.json"
 JST = timezone(timedelta(hours=9))
@@ -52,7 +52,7 @@ def read_learning_store():
 
 
 def save_learning_store(store):
-    CACHE_DIR.mkdir(exist_ok=True)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     temporary = LEARNING_FILE.with_suffix(".tmp")
     temporary.write_text(json.dumps(store, ensure_ascii=False), encoding="utf-8")
     temporary.replace(LEARNING_FILE)
@@ -146,7 +146,7 @@ program_cache = read_program_cache()
 
 
 def save_program_cache():
-    CACHE_DIR.mkdir(exist_ok=True)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     temporary = PROGRAM_CACHE_FILE.with_suffix(".tmp")
     temporary.write_text(
         json.dumps(program_cache, ensure_ascii=False),
@@ -293,7 +293,7 @@ def fetch_html(path, cache_seconds=CACHE_SECONDS):
         cached = cache.get(path)
         if cached and time.time() - cached[0] < cache_seconds:
             return cached[1]
-        CACHE_DIR.mkdir(exist_ok=True)
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cache_file = CACHE_DIR / f"{hashlib.sha256(path.encode()).hexdigest()}.html"
         stale_text = None
         if cache_file.exists():

@@ -1,44 +1,100 @@
-# Render 公開テスト手順
+# Render 本公開手順
 
-## 1. GitHubへアップ
+## 推奨構成
 
-このフォルダをGitHubリポジトリにアップします。
+本番公開では、無料プランではなく有料インスタンス + 永続ディスクを使います。
 
-`.official-cache/` はGitHubへ含めません。Render側で必要な公式データを再取得します。
-
-## 2. RenderでWeb Service作成
-
-Render Dashboardで:
-
-- New
-- Web Service
-- GitHubリポジトリを選択
-
-設定値:
-
+- Service: Render Web Service
 - Runtime: Python
+- Region: Singapore
+- Instance Type: Standard
+- Persistent Disk: 5GB
 - Build Command: `pip install -r requirements.txt`
 - Start Command: `python3 server.py`
-- Instance Type: Free でテスト可
+- Health Check Path: `/api/warmup`
 
-環境変数:
+## なぜこの構成にするか
 
-- `PYTHON_VERSION`: `3.11.9`
-- `BOAT_STARTUP_WARMUP`: `1`
+無料インスタンスはアクセスがないとスリープし、初回表示が遅くなります。
 
-`render.yaml` からBlueprintとして作成してもOKです。
+また、Renderの通常ファイルシステムは再起動や再デプロイで消えるため、公式データのキャッシュや学習データを残すには永続ディスクが必要です。
 
-## 3. 公開URL確認
+このアプリでは、以下を永続ディスクに保存します。
 
-デプロイ完了後、RenderのURLを開きます。
+- 公式出走表・結果などのキャッシュ
+- 学習データ
+- 予測改善用の履歴データ
 
-例:
+## Render環境変数
+
+Render Dashboardの Environment で以下を設定します。
+
+| Key | Value |
+| --- | --- |
+| `PYTHON_VERSION` | `3.11.9` |
+| `BOAT_STARTUP_WARMUP` | `1` |
+| `BOAT_DATA_DIR` | `/var/data/boat-predict` |
+
+## 永続ディスク
+
+Renderの Disks で以下を設定します。
+
+| Name | Mount Path | Size |
+| --- | --- | --- |
+| `boat-predict-data` | `/var/data` | `5GB` |
+
+`BOAT_DATA_DIR` は `/var/data/boat-predict` にします。
+
+## GitHubへアップロードするファイル
+
+最低限、以下は毎回アップロードします。
+
+- `index.html`
+- `app.js`
+- `styles.css`
+- `server.py`
+- `requirements.txt`
+- `render.yaml`
+- `DEPLOY_RENDER.md`
+
+`.official-cache/` はアップロードしません。Render側の永続ディスクに保存します。
+
+## デプロイ手順
+
+1. GitHubの `kegkeg4/boat-predict-ai` に最新ファイルをアップロードします。
+2. Render Dashboardで `boat-predict-ai` を開きます。
+3. `Manual Deploy` または GitHub連携の自動デプロイで反映します。
+4. `Events` に `Deploy live` が出るまで待ちます。
+5. 公開URLを開きます。
+
+公開URL:
 
 `https://boat-predict-ai.onrender.com/`
 
+## 独自ドメインを使う場合
+
+Render Dashboardの `Settings` -> `Custom Domains` からドメインを追加します。
+
+DNS側では、Renderに表示される接続先へ以下のように設定します。
+
+- `www` を使う場合: CNAMEでRenderの指定先へ向ける
+- ルートドメインを使う場合: DNSサービス側が対応していれば ALIAS / ANAME を使う
+
+SSLはRender側で自動発行されます。DNS反映には数分から数時間かかることがあります。
+
+## 月額費用の目安
+
+Renderの目安:
+
+- Web Service Standard: 約 $25/月
+- Persistent Disk 5GB: 約 $1.25/月
+- 合計: 約 $26.25/月
+
+アクセスが増えて重くなった場合は、Pro以上やDB分離を検討します。
+
 ## 注意
 
-- Render Freeはアクセスがないとスリープすることがあります。
-- 起動直後は当日データの先読みが走るため、初回だけ少し遅くなります。
-- 公式サイト取得に失敗した場合は、時間を置いて再読み込みしてください。
-- 本格運用では有料インスタンスかVPSの方が安定します。
+- `render.yaml` を使うと、Render側の設定をコードで管理できます。
+- 既存サービスにBlueprintを同期する場合、設定変更が反映されます。
+- Regionは作成後に変更できないため、最初から `singapore` 推奨です。
+- 永続ディスクを付けたサービスは水平スケールできないため、将来的にユーザー数が増えたらPostgreSQLやRedisへ分離します。

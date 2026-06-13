@@ -2,12 +2,21 @@ services:
   - type: web
     name: boat-predict-ai
     runtime: python
-    plan: free
+    region: singapore
+    plan: standard
     buildCommand: pip install -r requirements.txt
     startCommand: python3 server.py
     healthCheckPath: /api/warmup
+    autoDeployTrigger: commit
+    maxShutdownDelaySeconds: 60
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: BOAT_STARTUP_WARMUP
         value: "1"
+      - key: BOAT_DATA_DIR
+        value: /var/data/boat-predict
+    disk:
+      name: boat-predict-data
+      mountPath: /var/data
+      sizeGB: 5
