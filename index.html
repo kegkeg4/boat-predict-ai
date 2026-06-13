@@ -256,6 +256,35 @@
           <p class="data-caution">無料表示では一部表示。プレミアムでは本命5点・狙い目1点・穴1点、公式オッズ反映・展示後再計算を開放します。</p>
         </section>
 
+        <section id="resultCard" class="card result-card" hidden>
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">OFFICIAL RESULT</p>
+              <h2>確定結果と予測比較</h2>
+            </div>
+            <span id="resultHitBadge" class="result-hit-badge"></span>
+          </div>
+          <div class="result-grid">
+            <div>
+              <small>確定着順</small>
+              <div id="officialResult" class="official-result"></div>
+            </div>
+            <div class="result-stat">
+              <small>3連単払戻</small>
+              <strong id="resultPayout"></strong>
+            </div>
+            <div class="result-stat">
+              <small>予測順位</small>
+              <strong id="resultPredictionRank"></strong>
+            </div>
+            <div class="result-stat">
+              <small>予測時点の評価</small>
+              <strong id="resultEvaluation"></strong>
+            </div>
+          </div>
+          <p id="resultComment" class="result-comment"></p>
+        </section>
+
         <section id="raceRanking" class="card ranking-card">
           <div class="card-heading">
             <div>
@@ -351,35 +380,6 @@
             <div id="strategyProfitGrid" class="strategy-profit-grid"></div>
             <p id="simulatedProfitNote" class="simulated-profit-note"></p>
           </div>
-        </section>
-
-        <section id="resultCard" class="card result-card" hidden>
-          <div class="card-heading">
-            <div>
-              <p class="eyebrow">OFFICIAL RESULT</p>
-              <h2>確定結果と予測比較</h2>
-            </div>
-            <span id="resultHitBadge" class="result-hit-badge"></span>
-          </div>
-          <div class="result-grid">
-            <div>
-              <small>確定着順</small>
-              <div id="officialResult" class="official-result"></div>
-            </div>
-            <div class="result-stat">
-              <small>3連単払戻</small>
-              <strong id="resultPayout"></strong>
-            </div>
-            <div class="result-stat">
-              <small>予測順位</small>
-              <strong id="resultPredictionRank"></strong>
-            </div>
-            <div class="result-stat">
-              <small>予測時点の評価</small>
-              <strong id="resultEvaluation"></strong>
-            </div>
-          </div>
-          <p id="resultComment" class="result-comment"></p>
         </section>
 
         <section id="plans" class="plan-panel">
