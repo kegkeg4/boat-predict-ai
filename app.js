@@ -1191,6 +1191,7 @@ function buildTicketStrategyGroups(data) {
   const topBoats = new Set(data.ranking.slice(0, 3).map((racer) => racer.boat));
   const officialBoats = new Set(data.officialOrder.slice(0, 3).map((racer) => racer.boat));
   const laneOne = data.racers.find((racer) => racer.boat === 1);
+  const predictedLeader = data.ranking[0];
   const upsetSignal = laneOne ? 100 - laneOne.probability : 50;
   const withScores = candidates.map((pick) => {
     const agreement = pick.ticket.filter((racer) => officialBoats.has(racer.boat)).length;
@@ -1221,10 +1222,20 @@ function buildTicketStrategyGroups(data) {
     };
   });
   const usedKeys = new Set();
+  const leaderAxisPool = [...withScores]
+    .filter((pick) => pick.ticket[0].boat === predictedLeader.boat)
+    .sort((a, b) => {
+      const aPair = a.pairProbability * 2.2 + a.footScore * 1.4 + a.valueScore * .55 - a.torigamiPenalty;
+      const bPair = b.pairProbability * 2.2 + b.footScore * 1.4 + b.valueScore * .55 - b.torigamiPenalty;
+      return bPair - aPair;
+    });
   const honmeiPool = [...withScores]
     .filter((pick) => pick.estimatedOdds >= 5 && (pick.valueScore >= 78 || pick.probability >= 1.5))
     .sort((a, b) => b.honmeiScore - a.honmeiScore);
-  const honmei = ensurePickCount(honmeiPool, withScores, STRATEGY_CONFIG.honmei.count, usedKeys);
+  const honmeiPrimary = predictedLeader.probability >= 24
+    ? [...leaderAxisPool, ...honmeiPool]
+    : honmeiPool;
+  const honmei = ensurePickCount(honmeiPrimary, withScores, STRATEGY_CONFIG.honmei.count, usedKeys);
 
   const neraiPool = withScores
     .filter((pick) =>
@@ -1308,6 +1319,7 @@ function buildTicketCandidates(data) {
     const secondShare = second.probability / Math.max(1, 100 - first.probability);
     const thirdShare = third.probability / Math.max(1, 100 - first.probability - second.probability);
     const probability = clamp(firstChance * secondShare * thirdShare * 100 * 1.9, .05, 24);
+    const pairProbability = clamp(firstChance * secondShare * 100 * 1.35, .1, 42);
 
     const firstPublic = publicProbability.get(first.boat);
     const secondPublic = publicProbability.get(second.boat) / Math.max(.01, 1 - firstPublic);
@@ -1328,7 +1340,7 @@ function buildTicketCandidates(data) {
         + (0.18 - racer.start) * 18
       ) * orderWeight;
     }, 0);
-    return { ticket, probability, estimatedOdds, valueScore, footScore, actualOdds: Boolean(actualOdds) };
+    return { ticket, probability, pairProbability, estimatedOdds, valueScore, footScore, actualOdds: Boolean(actualOdds) };
   })
     .sort((a, b) => b.valueScore - a.valueScore);
 }
@@ -1457,6 +1469,7 @@ function calculateDailyPerformance() {
     completed: 0,
     judged: 0,
     exactHits: 0,
+    exactaHits: 0,
     leaderHits: 0,
     simulatedStake: 0,
     simulatedReturn: 0,
@@ -1479,6 +1492,7 @@ function calculateDailyPerformance() {
       official: null,
       status: isRaceCompleted(race) ? "completed" : "waiting",
       hitIndex: -1,
+      exactaHit: false,
       leaderHit: false
     };
     totals.rows.push(row);
@@ -1494,6 +1508,9 @@ function calculateDailyPerformance() {
     const resultKey = official.result.join("-");
     row.hitIndex = prediction.picks.findIndex((pick) => pick.ticket.join("-") === resultKey);
     row.hitPick = row.hitIndex >= 0 ? prediction.picks[row.hitIndex] : null;
+    row.exactaHit = prediction.picks.some((pick) =>
+      pick.ticket[0] === official.result[0] && pick.ticket[1] === official.result[1]
+    );
     row.leaderHit = prediction.picks.some((pick) => pick.ticket[0] === official.result[0]);
     Object.values(totals.strategy).forEach((strategy) => {
       strategy.stake += strategy.count * PERFORMANCE_BET_UNIT_YEN;
@@ -1515,6 +1532,9 @@ function calculateDailyPerformance() {
     totals.simulatedNet += row.simulatedNet;
     if (row.leaderHit) {
       totals.leaderHits += 1;
+    }
+    if (row.exactaHit) {
+      totals.exactaHits += 1;
     }
   }
   return totals;
@@ -1560,7 +1580,7 @@ function renderPerformanceRaceList(rows) {
         <div class="performance-result">
           <small>確定</small>
           <b>${resultText}</b>
-          ${row.official ? `<em>${row.official.payout.toLocaleString("ja-JP")}円</em>` : ""}
+          ${row.official ? `<em>${row.exactaHit ? "2連単形OK / " : ""}${row.official.payout.toLocaleString("ja-JP")}円</em>` : ""}
         </div>
         ${row.official ? `
           <div class="performance-money ${row.simulatedNet >= 0 ? "plus" : "minus"}">
@@ -1601,6 +1621,7 @@ function saveLearningLog(rows) {
       payout: row.official.payout,
       picks: row.prediction.picks,
       hitIndex: row.hitIndex,
+      exactaHit: row.exactaHit,
       leaderHit: row.leaderHit,
       savedAt: new Date().toISOString()
     };
@@ -1611,12 +1632,15 @@ function saveLearningLog(rows) {
 function renderDailyPerformance() {
   const totals = calculateDailyPerformance();
   const exactRate = totals.judged ? Math.round(totals.exactHits / totals.judged * 100) : 0;
+  const exactaRate = totals.judged ? Math.round(totals.exactaHits / totals.judged * 100) : 0;
   const leaderRate = totals.judged ? Math.round(totals.leaderHits / totals.judged * 100) : 0;
   const recoveryRate = totals.simulatedStake ? Math.round(totals.simulatedReturn / totals.simulatedStake * 100) : 0;
   document.querySelector("#dailyPredictedCount").textContent = totals.predicted;
   document.querySelector("#dailyJudgedCount").textContent = totals.judged;
   document.querySelector("#dailyExactHits").textContent = totals.exactHits;
   document.querySelector("#dailyExactRate").textContent = `${exactRate}%`;
+  document.querySelector("#dailyExactaHits").textContent = totals.exactaHits;
+  document.querySelector("#dailyExactaRate").textContent = `${exactaRate}%`;
   document.querySelector("#dailyLeaderHits").textContent = totals.leaderHits;
   document.querySelector("#dailyLeaderRate").textContent = `${leaderRate}%`;
   document.querySelector("#simulatedTotalSummary").textContent =
