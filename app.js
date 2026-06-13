@@ -154,6 +154,7 @@ let predictionRequestId = 0;
 let activeProgramController = null;
 let performanceRefreshTimer = null;
 let performanceRefreshInFlight = false;
+let selectedResultRefreshInFlight = false;
 let isPremiumMode = localStorage.getItem(PLAN_MODE_KEY) === "premium";
 const dynamicPrograms = loadStoredPrograms();
 const dynamicResults = {};
@@ -1102,14 +1103,16 @@ function renderOfficialResult(data) {
   const hd = dateInput.value.replaceAll("-", "");
   if (!official) {
     const badge = document.querySelector("#resultHitBadge");
-    badge.className = "result-hit-badge miss";
-    badge.textContent = "公式結果未取得";
+    badge.className = `result-hit-badge ${selectedResultRefreshInFlight ? "" : "miss"}`;
+    badge.textContent = selectedResultRefreshInFlight ? "結果取得中" : "公式結果未取得";
     document.querySelector("#officialResult").innerHTML = "―";
     document.querySelector("#resultPayout").textContent = "―";
-    document.querySelector("#resultPredictionRank").textContent = "未判定";
-    document.querySelector("#resultEvaluation").textContent = "終了済み";
+    document.querySelector("#resultPredictionRank").textContent = selectedResultRefreshInFlight ? "取得中" : "未判定";
+    document.querySelector("#resultEvaluation").textContent = selectedResultRefreshInFlight ? "公式結果を確認中" : "終了済み";
     document.querySelector("#resultComment").innerHTML =
-      `このレースは締切時刻を過ぎていますが、結果データをまだ取り込んでいません。推測値は表示しません。` +
+      (selectedResultRefreshInFlight
+        ? `このレースの公式結果を優先して取得しています。`
+        : `このレースは締切時刻を過ぎていますが、結果データをまだ取り込んでいません。推測値は表示しません。`) +
       ` <a href="https://www.boatrace.jp/owpc/pc/race/raceresult?rno=${selectedRace}&jcd=${jcd}&hd=${hd}" target="_blank" rel="noreferrer">公式結果を確認 ↗</a>`;
     resultCard.hidden = false;
     return;
@@ -1679,12 +1682,15 @@ function scheduleDailyPerformanceRefresh(requestId) {
 }
 
 function schedulePostPredictionFetches(data, requestId) {
-  refreshOfficialResult(data, requestId);
+  refreshOfficialResult(data, requestId).finally(() => {
+    if (requestId === predictionRequestId) {
+      scheduleDailyPerformanceRefresh(requestId);
+    }
+  });
   setTimeout(() => {
     if (requestId !== predictionRequestId) return;
     refreshRaceSignals(data, requestId);
-  }, 450);
-  scheduleDailyPerformanceRefresh(requestId);
+  }, 900);
 }
 
 async function runPrediction(withLoading = true) {
@@ -1770,6 +1776,7 @@ async function runPrediction(withLoading = true) {
 
 async function refreshOfficialResult(data, requestId) {
   if (!isRaceCompleted(selectedRace)) return;
+  selectedResultRefreshInFlight = true;
   renderOfficialResult(data);
   try {
     await loadOfficialResult(activeProgramController.signal);
@@ -1784,6 +1791,11 @@ async function refreshOfficialResult(data, requestId) {
     renderOfficialResult(data);
   } catch (error) {
     if (error.name !== "AbortError") console.warn(error);
+  } finally {
+    selectedResultRefreshInFlight = false;
+    if (requestId === predictionRequestId) {
+      renderOfficialResult(currentData || data);
+    }
   }
 }
 

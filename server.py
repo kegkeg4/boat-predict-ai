@@ -697,7 +697,8 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
 def load_result(date, jcd, race):
     compact_date = date.replace("-", "")
     path = f"/owpc/pc/race/raceresult?rno={race}&jcd={jcd}&hd={compact_date}"
-    html_text = fetch_html(path, cache_seconds=60)
+    result_cache_seconds = CACHE_SECONDS if date < current_jst_date() else 60
+    html_text = fetch_html(path, cache_seconds=result_cache_seconds)
     result = parse_result(html_text)
     weather = parse_weather(html_text)
     return {
