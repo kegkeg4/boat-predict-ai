@@ -312,7 +312,7 @@ def get_fetch_lock(path):
         return fetch_locks.setdefault(path, threading.Lock())
 
 
-def fetch_html(path, cache_seconds=CACHE_SECONDS):
+def fetch_html(path, cache_seconds=CACHE_SECONDS, timeout=12):
     cached = cache.get(path)
     if cached and time.time() - cached[0] < cache_seconds:
         return cached[1]
@@ -330,7 +330,7 @@ def fetch_html(path, cache_seconds=CACHE_SECONDS):
                 return stale_text
         request = Request(f"{OFFICIAL_BASE}{path}", headers={"User-Agent": USER_AGENT})
         try:
-            with urlopen(request, timeout=12) as response:
+            with urlopen(request, timeout=timeout) as response:
                 text = response.read().decode("utf-8", errors="replace")
         except Exception:
             if stale_text:
@@ -438,6 +438,28 @@ def parse_race_index(html_text):
                 }
             )
     return sorted(races, key=lambda item: item["race"])
+
+
+def parse_daily_venue_index(html_text):
+    active = {}
+    for match in re.finditer(r"raceindex\?jcd=(\d{2})(?:&amp;|&)hd=\d{8}", html_text):
+        active.setdefault(match.group(1), 12)
+    for match in re.finditer(r"racelist\?rno=(\d+)(?:&amp;|&)jcd=(\d{2})(?:&amp;|&)hd=\d{8}", html_text):
+        race = int(match.group(1))
+        jcd = match.group(2)
+        active[jcd] = max(active.get(jcd, 0), race)
+    if not active:
+        return {}
+    return {
+        jcd: {
+            "jcd": jcd,
+            "available": jcd in active,
+            "races": active.get(jcd, 0),
+            "cached": False,
+            "source": "daily-index",
+        }
+        for jcd in BOATRACE_JCDS
+    }
 
 
 def first_number(value):
@@ -865,6 +887,28 @@ def load_venues_status(date):
         if cached and time.time() - cached.get("savedAt", 0) < CACHE_SECONDS:
             return cached["payload"]
     compact_date = date.replace("-", "")
+    try:
+        index_html = fetch_html(
+            f"/owpc/pc/race/index?hd={compact_date}",
+            cache_seconds=CACHE_SECONDS,
+            timeout=12,
+        )
+        venues_status = parse_daily_venue_index(index_html)
+        if venues_status:
+            payload = {
+                "date": date,
+                "venues": venues_status,
+                "source": "daily-index",
+            }
+            with venue_status_cache_lock:
+                venue_status_cache[date] = {
+                    "savedAt": time.time(),
+                    "payload": payload,
+                }
+            save_schedule_cache()
+            return payload
+    except Exception:
+        pass
     venues_status = {}
     now = time.time()
     with ThreadPoolExecutor(max_workers=10) as executor:
@@ -883,7 +927,7 @@ def load_venues_status(date):
                     }
                     continue
             path = f"/owpc/pc/race/raceindex?hd={compact_date}&jcd={jcd}"
-            futures[executor.submit(fetch_html, path): jcd] = jcd
+            futures[executor.submit(fetch_html, path)] = jcd
         for future in as_completed(futures):
             jcd = futures[future]
             try:
