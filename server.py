@@ -30,6 +30,8 @@ fetch_locks_guard = threading.Lock()
 program_cache_lock = threading.Lock()
 venue_status_cache_lock = threading.Lock()
 venue_status_cache = {}
+results_cache_lock = threading.Lock()
+results_cache = {}
 prefetch_lock = threading.Lock()
 prefetching_programs = set()
 warmup_lock = threading.Lock()
@@ -854,6 +856,12 @@ def load_result(date, jcd, race):
 
 
 def load_results(date, jcd):
+    cache_key = f"{date}-{jcd}"
+    result_cache_seconds = CACHE_SECONDS if date < current_jst_date() else 45
+    with results_cache_lock:
+        cached = results_cache.get(cache_key)
+        if cached and time.time() - cached.get("savedAt", 0) < result_cache_seconds:
+            return cached["payload"]
     results = {}
     with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {
@@ -874,11 +882,17 @@ def load_results(date, jcd):
                     "weather": {"available": False},
                     "error": str(error),
                 }
-    return {
+    payload = {
         "date": date,
         "jcd": jcd,
         "results": results,
     }
+    with results_cache_lock:
+        results_cache[cache_key] = {
+            "savedAt": time.time(),
+            "payload": payload,
+        }
+    return payload
 
 
 def load_venues_status(date):

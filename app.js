@@ -231,6 +231,7 @@ let performanceRefreshInFlight = false;
 let selectedResultRefreshInFlight = false;
 let performanceRenderTimer = null;
 let performanceCache = { key: "", totals: null };
+let predictionByRaceCache = {};
 let isPremiumMode = localStorage.getItem(PLAN_MODE_KEY) === "premium";
 let venueStatusByDate = loadStoredVenueStatus();
 const dynamicPrograms = loadStoredPrograms();
@@ -322,6 +323,7 @@ async function fetchWithTimeout(url, options = {}) {
 
 function invalidatePerformanceCache() {
   performanceCache = { key: "", totals: null };
+  predictionByRaceCache = {};
 }
 
 async function loadLearningWeights() {
@@ -1783,6 +1785,8 @@ function renderRaceRanking(data) {
 }
 
 function getPrimaryPredictionForRace(race) {
+  const key = `${getPerformanceCacheKeyBase()}-${race}`;
+  if (predictionByRaceCache[key]) return predictionByRaceCache[key];
   const raceData = buildRaceData(race);
   if (!raceData) return null;
   const groups = buildTicketStrategyGroups(raceData);
@@ -1797,12 +1801,23 @@ function getPrimaryPredictionForRace(race) {
       strategyIndex: index
     }))
   );
-  return {
+  const prediction = {
     data: raceData,
     ticket: picks[0]?.ticket || raceData.ranking.slice(0, 3).map((racer) => racer.boat),
     groups: groups.map((group) => ({ key: group.key, label: group.label, picks: picks.filter((pick) => pick.strategyKey === group.key) })),
     picks
   };
+  predictionByRaceCache[key] = prediction;
+  return prediction;
+}
+
+function getPerformanceCacheKeyBase() {
+  const program = dynamicPrograms[getProgramKey()];
+  const detailedRaces = program?.races
+    ?.filter((race) => race.detailed)
+    .map((race) => race.race)
+    .join(",") || "";
+  return `${dateInput.value}-${venueSelect.value}-${detailedRaces}-${isPremiumMode ? "premium" : "free"}`;
 }
 
 function calculateDailyPerformance() {
@@ -1883,17 +1898,12 @@ function calculateDailyPerformance() {
 }
 
 function getPerformanceCacheKey() {
-  const program = dynamicPrograms[getProgramKey()];
-  const detailedRaces = program?.races
-    ?.filter((race) => race.detailed)
-    .map((race) => race.race)
-    .join(",") || "";
   const resultKey = Array.from({ length: 12 }, (_, index) => {
     const race = index + 1;
     const result = getVerifiedResult(race);
     return result ? `${race}:${result.result.join("-")}:${result.payout}` : `${race}:none`;
   }).join("|");
-  return `${dateInput.value}-${venueSelect.value}-${detailedRaces}-${resultKey}-${isPremiumMode ? "premium" : "free"}`;
+  return `${getPerformanceCacheKeyBase()}-${resultKey}`;
 }
 
 function getDailyPerformanceTotals() {
@@ -1978,6 +1988,7 @@ function saveLearningLog(rows) {
   }
   const venue = venues[Number(venueSelect.value)].name;
   const serverEvents = [];
+  let hasChanges = false;
   judgedRows.forEach((row) => {
     const key = `${dateInput.value}-${venue}-${row.race}`;
     const predictedLeader = row.prediction.picks[0]?.ticket?.[0] || row.prediction.data?.ranking?.[0]?.boat || null;
@@ -1999,15 +2010,18 @@ function saveLearningLog(rows) {
       leaderHit: row.leaderHit,
       savedAt: new Date().toISOString()
     };
-    stored[key] = {
-      ...event
-    };
+    if (JSON.stringify(stored[key]) !== JSON.stringify(event)) {
+      stored[key] = { ...event };
+      hasChanges = true;
+    }
     if (!postedLearningEventKeys.has(key)) {
       postedLearningEventKeys.add(key);
       serverEvents.push(event);
     }
   });
-  localStorage.setItem(LEARNING_LOG_KEY, JSON.stringify(stored));
+  if (hasChanges) {
+    localStorage.setItem(LEARNING_LOG_KEY, JSON.stringify(stored));
+  }
   postLearningEvents(serverEvents);
 }
 
