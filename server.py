@@ -27,6 +27,8 @@ cache = {}
 fetch_locks = {}
 fetch_locks_guard = threading.Lock()
 program_cache_lock = threading.Lock()
+venue_status_cache_lock = threading.Lock()
+venue_status_cache = {}
 prefetch_lock = threading.Lock()
 prefetching_programs = set()
 warmup_lock = threading.Lock()
@@ -248,33 +250,20 @@ def startup_warmup_today():
         startedAt=datetime.now(JST).isoformat(timespec="seconds"),
         finishedAt=None,
     )
-    def progress(current_jcd, _race):
-        update_warmup_status(
-            currentJcd=current_jcd,
-            completedRaces=count_cached_detailed_races(date),
-        )
-
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {
-            executor.submit(warm_program_races, date, jcd, progress): jcd
-            for jcd in BOATRACE_JCDS
-        }
-        completed = 0
-        for future in as_completed(futures):
-            completed += 1
-            try:
-                future.result()
-            except Exception:
-                pass
-            update_warmup_status(
-                currentJcd=futures[future],
-                completedVenues=completed,
-                completedRaces=count_cached_detailed_races(date),
-            )
+    try:
+        venues_payload = load_venues_status(date)
+        checked = len(venues_payload.get("venues", {}))
+    except Exception:
+        checked = count_checked_venues(date)
+    update_warmup_status(
+        currentJcd="",
+        completedVenues=checked,
+        completedRaces=count_cached_detailed_races(date),
+    )
     update_warmup_status(
         active=False,
         currentJcd="",
-        completedVenues=len(BOATRACE_JCDS),
+        completedVenues=count_checked_venues(date),
         completedRaces=count_cached_detailed_races(date),
         finishedAt=datetime.now(JST).isoformat(timespec="seconds"),
     )
@@ -833,10 +822,14 @@ def load_results(date, jcd):
 
 
 def load_venues_status(date):
+    with venue_status_cache_lock:
+        cached = venue_status_cache.get(date)
+        if cached and time.time() - cached.get("savedAt", 0) < CACHE_SECONDS:
+            return cached["payload"]
     compact_date = date.replace("-", "")
     venues_status = {}
     now = time.time()
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {}
         for jcd in BOATRACE_JCDS:
             program_key = f"{date}-{jcd}"
@@ -865,10 +858,16 @@ def load_venues_status(date):
                 "races": len(races),
                 "cached": False,
             }
-    return {
+    payload = {
         "date": date,
         "venues": venues_status,
     }
+    with venue_status_cache_lock:
+        venue_status_cache[date] = {
+            "savedAt": time.time(),
+            "payload": payload,
+        }
+    return payload
 
 
 class AppHandler(SimpleHTTPRequestHandler):

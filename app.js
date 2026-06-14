@@ -97,10 +97,12 @@ const venueCourseProfiles = {
 };
 const OFFICIAL_SIGNAL_WEIGHT = .35;
 const PROGRAM_CACHE_KEY = "boat-predict-official-programs-v1";
+const VENUE_STATUS_CACHE_KEY = "boat-predict-venue-status-v1";
 const LEARNING_LOG_KEY = "boat-predict-learning-log-v1";
 const LEARNING_WEIGHTS_KEY = "boat-predict-learning-weights-v1";
 const PLAN_MODE_KEY = "boat-predict-plan-mode";
 const PROGRAM_CACHE_MS = 6 * 60 * 60 * 1000;
+const VENUE_STATUS_CACHE_MS = 6 * 60 * 60 * 1000;
 const PERFORMANCE_BET_UNIT_YEN = 100;
 const RESULT_UNAVAILABLE_CACHE_MS = 15 * 1000;
 const REQUEST_TIMEOUT_MS = 10000;
@@ -230,7 +232,7 @@ let selectedResultRefreshInFlight = false;
 let performanceRenderTimer = null;
 let performanceCache = { key: "", totals: null };
 let isPremiumMode = localStorage.getItem(PLAN_MODE_KEY) === "premium";
-let venueStatusByDate = {};
+let venueStatusByDate = loadStoredVenueStatus();
 const dynamicPrograms = loadStoredPrograms();
 const dynamicResults = {};
 const dynamicRaceSignals = {};
@@ -262,6 +264,30 @@ function loadStoredPrograms() {
   } catch {
     return {};
   }
+}
+
+function loadStoredVenueStatus() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(VENUE_STATUS_CACHE_KEY) || "{}");
+    return Object.fromEntries(
+      Object.entries(stored)
+        .filter(([, item]) => item?.savedAt && Date.now() - item.savedAt < VENUE_STATUS_CACHE_MS)
+        .map(([date, item]) => [date, item.venues || {}])
+    );
+  } catch {
+    return {};
+  }
+}
+
+function storeVenueStatus(date, venuesPayload) {
+  let stored = {};
+  try {
+    stored = JSON.parse(localStorage.getItem(VENUE_STATUS_CACHE_KEY) || "{}");
+  } catch {
+    stored = {};
+  }
+  stored[date] = { savedAt: Date.now(), venues: venuesPayload };
+  localStorage.setItem(VENUE_STATUS_CACHE_KEY, JSON.stringify(stored));
 }
 
 function storeProgram(key) {
@@ -382,10 +408,10 @@ async function refreshWarmupStatus() {
     warmupStatus.classList.toggle("is-warming", Boolean(status.active));
     if (status.active) {
       warmupStatus.lastChild.textContent =
-        `先読み中 ${status.checkedVenues || status.completedVenues}/${status.totalVenues}場 ${status.completedRaces}R`;
+        `開催確認中 ${status.checkedVenues || status.completedVenues}/${status.totalVenues}場`;
     } else if (status.finishedAt) {
       warmupStatus.lastChild.textContent =
-        `先読み完了 ${status.checkedVenues || status.completedVenues}場 ${status.completedRaces}R`;
+        `開催確認済み ${status.checkedVenues || status.completedVenues}場`;
     } else {
       warmupStatus.lastChild.textContent = "データ更新済み";
     }
@@ -612,11 +638,15 @@ function renderVenueOptions() {
 
 async function refreshVenueStatus(date = dateInput.value) {
   if (!date) return;
+  if (venueStatusByDate[date]) {
+    renderVenueOptions();
+  }
   try {
-    const response = await fetchWithTimeout(`/api/venues?date=${encodeURIComponent(date)}`, { timeoutMs: 12000 });
+    const response = await fetchWithTimeout(`/api/venues?date=${encodeURIComponent(date)}`, { timeoutMs: 7000 });
     if (!response.ok) throw new Error(`venues ${response.status}`);
     const payload = await response.json();
     venueStatusByDate[date] = payload.venues || {};
+    storeVenueStatus(date, venueStatusByDate[date]);
     if (date === dateInput.value) renderVenueOptions();
   } catch (error) {
     if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
@@ -2094,29 +2124,34 @@ async function refreshDailyPerformanceResults(requestId) {
       renderDailyPerformance({ renderList: false });
     }
 
-    const key = getProgramKey();
-    const missingProgramRaces = allRaces.filter((race) => {
-      const cachedRace = dynamicPrograms[key]?.races.find((item) => item.race === race);
-      return !cachedRace?.detailed;
-    });
-    await runWithConcurrency(
-      missingProgramRaces,
-      2,
-      async (race) => {
-        await loadOfficialProgramForRace(race, activeProgramController.signal, BACKGROUND_PROGRAM_TIMEOUT_MS).catch((error) => {
-          if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
-          return null;
-        });
-      },
-      () => {
-        if (requestId === predictionRequestId) schedulePerformanceRender({ renderList: false });
-      }
-    );
-    if (requestId !== predictionRequestId) return;
     renderDailyPerformance();
+    warmMissingPerformancePrograms(requestId, allRaces);
   } finally {
     performanceRefreshInFlight = false;
   }
+}
+
+async function warmMissingPerformancePrograms(requestId, allRaces) {
+  const key = getProgramKey();
+  const missingProgramRaces = allRaces.filter((race) => {
+    const cachedRace = dynamicPrograms[key]?.races.find((item) => item.race === race);
+    return !cachedRace?.detailed;
+  });
+  if (!missingProgramRaces.length) return;
+  await runWithConcurrency(
+    missingProgramRaces,
+    2,
+    async (race) => {
+      await loadOfficialProgramForRace(race, activeProgramController.signal, BACKGROUND_PROGRAM_TIMEOUT_MS).catch((error) => {
+        if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
+        return null;
+      });
+    },
+    () => {
+      if (requestId === predictionRequestId) schedulePerformanceRender({ renderList: false });
+    }
+  );
+  if (requestId === predictionRequestId) renderDailyPerformance();
 }
 
 function scheduleDailyPerformanceRefresh(requestId) {
