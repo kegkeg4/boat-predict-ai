@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex,nofollow">
+  <title>管理画面 | BOAT PREDICT AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;800&family=Noto+Sans+JP:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=20260615-admin-1">
+</head>
+<body class="admin-page">
+  <main class="admin-shell">
+    <header class="admin-header">
+      <div>
+        <p class="eyebrow">ADMIN DASHBOARD</p>
+        <h1>収支管理</h1>
+      </div>
+      <a href="/" class="admin-back">予測画面へ</a>
+    </header>
+
+    <section class="admin-control card">
+      <div>
+        <label for="adminDate">集計日</label>
+        <input id="adminDate" type="date">
+      </div>
+      <button id="adminReload" type="button">集計を更新</button>
+      <button id="adminBatchSave" class="admin-secondary-button" type="button">全会場を一括集計・保存</button>
+      <p id="adminStatus">管理データを読み込みます。</p>
+    </section>
+
+    <section class="admin-summary">
+      <article class="card">
+        <small>判定済みレース</small>
+        <strong id="adminRaceCount">0</strong>
+      </article>
+      <article class="card">
+        <small>本命収支</small>
+        <strong id="adminHonmeiTotal">0円</strong>
+      </article>
+      <article class="card">
+        <small>狙い目収支</small>
+        <strong id="adminNeraiTotal">0円</strong>
+      </article>
+      <article class="card">
+        <small>穴収支</small>
+        <strong id="adminAnaTotal">0円</strong>
+      </article>
+      <article class="card total">
+        <small>合計収支</small>
+        <strong id="adminNetTotal">0円</strong>
+      </article>
+    </section>
+
+    <section id="adminCoverage" class="admin-coverage card" hidden></section>
+
+    <section class="card admin-table-card">
+      <div class="admin-table-head">
+        <div>
+          <p class="eyebrow">DAILY PERFORMANCE</p>
+          <h2 id="adminTableTitle">日別・会場別収支</h2>
+        </div>
+        <span>各買い目100円計算</span>
+      </div>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>会場</th>
+              <th>本命</th>
+              <th>狙い目</th>
+              <th>穴</th>
+              <th>収支</th>
+            </tr>
+          </thead>
+          <tbody id="adminTableBody"></tbody>
+          <tfoot id="adminTableFoot"></tfoot>
+        </table>
+      </div>
+      <p class="admin-note">この画面は、ブラウザ内に保存された予測ログを自動同期してから集計します。未保存の会場は収支に含みません。</p>
+    </section>
+  </main>
+  <script src="admin.js?v=20260615-admin-1"></script>
+</body>
+</html>

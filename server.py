@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import json
 import hashlib
 import os
@@ -24,6 +25,12 @@ SCHEDULE_CACHE_FILE = CACHE_DIR / "schedules.json"
 LEARNING_FILE = CACHE_DIR / "learning.json"
 JST = timezone(timedelta(hours=9))
 BOATRACE_JCDS = [f"{number:02d}" for number in range(1, 25)]
+VENUE_NAMES = [
+    "桐生", "戸田", "江戸川", "平和島", "多摩川", "浜名湖",
+    "蒲郡", "常滑", "津", "三国", "びわこ", "住之江",
+    "尼崎", "鳴門", "丸亀", "児島", "宮島", "徳山",
+    "下関", "若松", "芦屋", "福岡", "唐津", "大村",
+]
 cache = {}
 fetch_locks = {}
 fetch_locks_guard = threading.Lock()
@@ -138,6 +145,119 @@ def record_learning_events(events):
         store["updatedAt"] = datetime.now(JST).isoformat(timespec="seconds")
         save_learning_store(store)
     return get_learning()
+
+
+def normalize_ticket(ticket):
+    if not isinstance(ticket, list):
+        return ""
+    return "-".join(str(int(value)) for value in ticket if isinstance(value, (int, float)))
+
+
+def get_admin_performance(date):
+    store = read_learning_store()
+    events = [
+        event
+        for event in store.get("events", {}).values()
+        if isinstance(event, dict) and event.get("date") == date
+    ]
+    venue_order = {name: index for index, name in enumerate(VENUE_NAMES)}
+    venue_status = {}
+    try:
+        venue_status = load_venues_status(date).get("venues", {})
+    except Exception:
+        venue_status = {}
+    strategies = {
+        "honmei": {"label": "本命"},
+        "nerai": {"label": "狙い目"},
+        "ana": {"label": "穴"},
+    }
+    rows = {}
+    totals = {
+        "honmei": {"stake": 0, "return": 0, "net": 0, "hits": 0},
+        "nerai": {"stake": 0, "return": 0, "net": 0, "hits": 0},
+        "ana": {"stake": 0, "return": 0, "net": 0, "hits": 0},
+        "net": 0,
+        "races": 0,
+    }
+    for event in events:
+        venue = event.get("venue") or "不明"
+        row = rows.setdefault(
+            venue,
+            {
+                "venue": venue,
+                "races": 0,
+                "honmei": {"stake": 0, "return": 0, "net": 0, "hits": 0},
+                "nerai": {"stake": 0, "return": 0, "net": 0, "hits": 0},
+                "ana": {"stake": 0, "return": 0, "net": 0, "hits": 0},
+                "net": 0,
+            },
+        )
+        row["races"] += 1
+        totals["races"] += 1
+        result_key = normalize_ticket(event.get("result"))
+        payout = int(event.get("payout") or 0)
+        picks = event.get("picks") if isinstance(event.get("picks"), list) else []
+        for strategy_key in strategies:
+            strategy_picks = [
+                pick for pick in picks
+                if isinstance(pick, dict) and pick.get("strategyKey") == strategy_key
+            ]
+            stake = len(strategy_picks) * 100
+            hit = any(normalize_ticket(pick.get("ticket")) == result_key for pick in strategy_picks)
+            returned = payout if hit else 0
+            net = returned - stake
+            row[strategy_key]["stake"] += stake
+            row[strategy_key]["return"] += returned
+            row[strategy_key]["net"] += net
+            row[strategy_key]["hits"] += 1 if hit else 0
+            totals[strategy_key]["stake"] += stake
+            totals[strategy_key]["return"] += returned
+            totals[strategy_key]["net"] += net
+            totals[strategy_key]["hits"] += 1 if hit else 0
+            row["net"] += net
+            totals["net"] += net
+    expected_rows = []
+    saved_by_venue = {
+        venue: set(
+            int(event.get("race"))
+            for event in events
+            if event.get("venue") == venue and str(event.get("race", "")).isdigit()
+        )
+        for venue in set(event.get("venue") or "不明" for event in events)
+    }
+    for jcd, status in venue_status.items():
+        if not status.get("available"):
+            continue
+        index = int(jcd) - 1
+        venue = VENUE_NAMES[index] if 0 <= index < len(VENUE_NAMES) else jcd
+        expected = int(status.get("races") or 0)
+        saved = len(saved_by_venue.get(venue, set()))
+        missing = max(0, expected - saved)
+        expected_rows.append({
+            "venue": venue,
+            "jcd": jcd,
+            "expected": expected,
+            "saved": saved,
+            "missing": missing,
+        })
+    expected_races = sum(row["expected"] for row in expected_rows)
+    saved_races = sum(row["saved"] for row in expected_rows)
+    return {
+        "date": date,
+        "races": totals["races"],
+        "rows": sorted(rows.values(), key=lambda row: venue_order.get(row["venue"], 999)),
+        "totals": totals,
+        "coverage": {
+            "expectedRaces": expected_races,
+            "savedRaces": saved_races,
+            "missingRaces": max(0, expected_races - saved_races),
+            "venues": sorted(expected_rows, key=lambda row: venue_order.get(row["venue"], 999)),
+            "missingVenues": [
+                row for row in sorted(expected_rows, key=lambda item: venue_order.get(item["venue"], 999))
+                if row["missing"] > 0
+            ],
+        },
+    }
 
 
 def read_program_cache():
@@ -968,6 +1088,21 @@ def load_venues_status(date):
 
 
 class AppHandler(SimpleHTTPRequestHandler):
+    def is_admin_request(self, path):
+        return path in ("/admin", "/admin.html", "/admin.js") or path.startswith("/api/admin/")
+
+    def require_admin_auth(self):
+        password = os.environ.get("ADMIN_PASSWORD", "boatadmin")
+        expected = "Basic " + base64.b64encode(f"admin:{password}".encode()).decode()
+        if self.headers.get("Authorization") == expected:
+            return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="BOAT PREDICT AI Admin"')
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write("Authentication required".encode("utf-8"))
+        return False
+
     def end_headers(self):
         if self.path == "/" or self.path.endswith((".html", ".js", ".css")):
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -975,10 +1110,21 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if self.is_admin_request(parsed.path) and not self.require_admin_auth():
+            return
+        if parsed.path == "/admin":
+            self.path = "/admin.html"
+            return super().do_GET()
         if parsed.path == "/api/warmup":
             return self.send_json(get_warmup_status())
         if parsed.path == "/api/learning":
             return self.send_json(get_learning())
+        if parsed.path == "/api/admin/performance":
+            query = parse_qs(parsed.query)
+            date = query.get("date", [""])[0]
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+                return self.send_json({"error": "invalid parameters"}, 400)
+            return self.send_json(get_admin_performance(date))
         if parsed.path not in ("/api/program", "/api/result", "/api/results", "/api/signals", "/api/venues"):
             return super().do_GET()
         query = parse_qs(parsed.query)

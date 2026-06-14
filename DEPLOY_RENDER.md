@@ -34,6 +34,9 @@ Render Dashboardの Environment で以下を設定します。
 | `PYTHON_VERSION` | `3.11.9` |
 | `BOAT_STARTUP_WARMUP` | `1` |
 | `BOAT_DATA_DIR` | `/var/data/boat-predict` |
+| `ADMIN_PASSWORD` | 管理画面用の任意のパスワード |
+
+管理画面は `/admin` から開けます。ログインユーザー名は `admin`、パスワードは `ADMIN_PASSWORD` に設定した値です。
 
 ## 永続ディスク
 
@@ -53,6 +56,8 @@ Renderの Disks で以下を設定します。
 - `app.js`
 - `styles.css`
 - `server.py`
+- `admin.html`
+- `admin.js`
 - `requirements.txt`
 - `render.yaml`
 - `DEPLOY_RENDER.md`

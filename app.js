@@ -116,6 +116,12 @@ const STRATEGY_CONFIG = {
   nerai: { label: "狙い目", count: 1 },
   ana: { label: "穴", count: 1 }
 };
+const BET_MODE_CONFIG = {
+  kenjitsu: { label: "堅実", strategyKeys: ["honmei"] },
+  shobu: { label: "勝負", strategyKeys: ["honmei", "nerai"] },
+  ana: { label: "穴狙い", strategyKeys: ["ana"] },
+  miokuri: { label: "見送り", strategyKeys: [] }
+};
 const officialMarks = ["◎", "○", "△", "×"];
 const raceCutoffTimes = ["10:35", "11:04", "11:33", "12:02", "12:31", "13:00", "13:29", "13:58", "14:27", "14:56", "15:25", "15:54"];
 const officialRacerProfiles = {
@@ -1250,6 +1256,7 @@ function renderRace(data) {
   `).join("");
 
   const [first, second] = ranking;
+  renderBetDecisionCard(data);
   renderTicketStrategies(data);
 
   const windComment = !Number.isFinite(wind)
@@ -1268,7 +1275,7 @@ function renderRace(data) {
     : first.boat <= 3
       ? `第一ターンは${first.boat}号艇の差し・まくり差しが決まる展開を想定。`
       : `第一ターンは外の攻めで隊形が崩れる展開を想定し、内の残りと外の連動を評価します。`;
-  const profile = buildInvestmentProfile(data);
+  const profile = buildBetDecision(data);
   document.querySelector("#scenarioText").textContent =
     `${leadComment}${venueComment}${windComment}${turnComment}${profile.label}として、的中率だけでなく期待値と回収率を優先します。`;
 
@@ -1634,12 +1641,37 @@ function renderTicketStrategies(data) {
   renderTicketGroup("#solidTicket", "#solidSubTickets", honmei, "本命");
   renderTicketGroup("#aimTicket", "#aimSubTickets", nerai, "狙い目");
   renderTicketGroup("#upsetTicket", "#upsetSubTickets", ana, "穴");
-  const profile = buildInvestmentProfile(data);
+  const profile = buildBetDecision(data, [honmei, nerai, ana]);
   const note = document.querySelector("#ticketStrategyNote");
   if (note) {
     note.textContent = `${profile.label}: ${profile.text}`;
     note.className = `ticket-note ${profile.key}`;
   }
+}
+
+function renderBetDecisionCard(data) {
+  const groups = buildTicketStrategyGroups(data);
+  const decision = buildBetDecision(data, groups);
+  const card = document.querySelector("#betDecisionCard");
+  if (!card) return;
+  card.className = `bet-decision-card ${decision.key}`;
+  document.querySelector("#betDecisionLabel").textContent = decision.label;
+  document.querySelector("#betDecisionAction").textContent = decision.buy
+    ? `${decision.label}で買う`
+    : "このレースは見送り推奨";
+  document.querySelector("#betDecisionReason").textContent = decision.text;
+  const buyPicks = groups
+    .filter((group) => decision.strategyKeys.includes(group.key))
+    .flatMap((group) => group.picks.map((pick, index) => ({ ...pick, label: `${group.label}${index + 1}` })));
+  document.querySelector("#betDecisionTickets").innerHTML = decision.buy && buyPicks.length
+    ? buyPicks.map((pick) => `
+      <span>
+        <b>${pick.label}</b>
+        ${pick.ticket.map((racer) => racer.boat).join("-")}
+        <small>${pick.estimatedOdds.toFixed(1)}倍</small>
+      </span>
+    `).join("")
+    : `<span class="no-bet"><b>買い目なし</b><small>資金温存</small></span>`;
 }
 
 function buildTicketCandidates(data) {
@@ -1717,6 +1749,39 @@ function buildInvestmentProfile(data) {
   };
 }
 
+function buildBetDecision(data, groups = buildTicketStrategyGroups(data), race = selectedRace) {
+  const picks = groups.flatMap((group) =>
+    group.picks.map((pick, index) => ({
+      ...pick,
+      strategyKey: group.key,
+      strategyLabel: group.label,
+      strategyIndex: index
+    }))
+  );
+  const best = [...picks].sort((a, b) => b.valueScore - a.valueScore)[0] || null;
+  const positiveCount = picks.filter((pick) => pick.valueScore >= 100 && pick.estimatedOdds >= 7).length;
+  const laneOne = data.racers.find((racer) => racer.boat === 1);
+  const leaderGap = data.ranking[0].probability - data.ranking[1].probability;
+  const tendency = buildRaceRanking(data).find((item) => item.race === race) || { solid: 50, upset: 50 };
+  const waterRisk = (Number.isFinite(data.wind) ? data.wind : 0) + (Number.isFinite(data.wave) ? data.wave * .7 : 0);
+  const topHonmei = groups.find((group) => group.key === "honmei")?.picks?.[0];
+  const topAna = groups.find((group) => group.key === "ana")?.picks?.[0];
+
+  if (!best || best.valueScore < 78) {
+    return { key: "miokuri", label: "見送り", buy: false, strategyKeys: [], text: "期待値が低く、買うほど回収率を削りやすいレースです。" };
+  }
+  if (topAna && tendency.upset >= 66 && topAna.estimatedOdds >= 25 && laneOne?.probability < 30 && topAna.valueScore >= 88) {
+    return { key: "ana", label: "穴狙い", buy: true, strategyKeys: BET_MODE_CONFIG.ana.strategyKeys, text: `穴気配${Math.round(tendency.upset)}。高配当候補を穴1点だけに絞る判断です。` };
+  }
+  if (best.valueScore >= 115 && positiveCount >= 2 && waterRisk <= 8) {
+    return { key: "shobu", label: "勝負", buy: true, strategyKeys: BET_MODE_CONFIG.shobu.strategyKeys, text: `期待値${best.valueScore.toFixed(0)}、妙味候補${positiveCount}点。本命5点＋狙い目1点で勝負します。` };
+  }
+  if (topHonmei && laneOne?.probability >= 30 && tendency.solid >= 66 && leaderGap >= 8 && waterRisk <= 7 && topHonmei.estimatedOdds >= 4.5) {
+    return { key: "kenjitsu", label: "堅実", buy: true, strategyKeys: BET_MODE_CONFIG.kenjitsu.strategyKeys, text: `堅め度${Math.round(tendency.solid)}。本命5点だけで相手を絞るレースです。` };
+  }
+  return { key: "miokuri", label: "見送り", buy: false, strategyKeys: [], text: `最高期待値${best.valueScore.toFixed(0)}。買い条件が足りないため、無理に手を出さない判断です。` };
+}
+
 function renderValuePicks(data) {
   const visibleCount = isPremiumMode ? 5 : 3;
   const picks = buildTicketCandidates(data).slice(0, visibleCount);
@@ -1790,6 +1855,7 @@ function getPrimaryPredictionForRace(race) {
   const raceData = buildRaceData(race);
   if (!raceData) return null;
   const groups = buildTicketStrategyGroups(raceData);
+  const betDecision = buildBetDecision(raceData, groups, race);
   const picks = groups.flatMap((group) =>
     group.picks.map((pick, index) => ({
       ticket: pick.ticket.map((racer) => racer.boat),
@@ -1803,6 +1869,7 @@ function getPrimaryPredictionForRace(race) {
   );
   const prediction = {
     data: raceData,
+    betDecision,
     ticket: picks[0]?.ticket || raceData.ranking.slice(0, 3).map((racer) => racer.boat),
     groups: groups.map((group) => ({ key: group.key, label: group.label, picks: picks.filter((pick) => pick.strategyKey === group.key) })),
     picks
@@ -1836,6 +1903,13 @@ function calculateDailyPerformance() {
       nerai: { label: STRATEGY_CONFIG.nerai.label, count: STRATEGY_CONFIG.nerai.count, stake: 0, return: 0, net: 0, hits: 0 },
       ana: { label: STRATEGY_CONFIG.ana.label, count: STRATEGY_CONFIG.ana.count, stake: 0, return: 0, net: 0, hits: 0 }
     },
+    betModes: {
+      recommended: { label: "推奨だけ", stake: 0, return: 0, net: 0, hits: 0, races: 0 },
+      kenjitsu: { label: BET_MODE_CONFIG.kenjitsu.label, stake: 0, return: 0, net: 0, hits: 0, races: 0 },
+      shobu: { label: BET_MODE_CONFIG.shobu.label, stake: 0, return: 0, net: 0, hits: 0, races: 0 },
+      ana: { label: BET_MODE_CONFIG.ana.label, stake: 0, return: 0, net: 0, hits: 0, races: 0 },
+      miokuri: { label: BET_MODE_CONFIG.miokuri.label, stake: 0, return: 0, net: 0, hits: 0, races: 0 }
+    },
     rows: []
   };
 
@@ -1846,6 +1920,7 @@ function calculateDailyPerformance() {
     const row = {
       race,
       prediction,
+      betDecision: prediction.betDecision,
       official: null,
       status: isRaceCompleted(race) ? "completed" : "waiting",
       hitIndex: -1,
@@ -1882,6 +1957,25 @@ function calculateDailyPerformance() {
         strategy.net += official.payout;
         strategy.hits += 1;
       }
+    }
+    const decision = prediction.betDecision || BET_MODE_CONFIG.miokuri;
+    const selectedStrategyKeys = new Set(decision.strategyKeys || []);
+    const recommendedPicks = prediction.picks.filter((pick) => selectedStrategyKeys.has(pick.strategyKey));
+    row.recommendedStake = recommendedPicks.length * PERFORMANCE_BET_UNIT_YEN;
+    row.recommendedReturn = row.hitPick && selectedStrategyKeys.has(row.hitPick.strategyKey) ? official.payout : 0;
+    row.recommendedNet = row.recommendedReturn - row.recommendedStake;
+    if (decision.buy && row.recommendedStake > 0) {
+      ["recommended", decision.key].forEach((modeKey) => {
+        const mode = totals.betModes[modeKey];
+        if (!mode) return;
+        mode.races += 1;
+        mode.stake += row.recommendedStake;
+        mode.return += row.recommendedReturn;
+        mode.net += row.recommendedNet;
+        if (row.recommendedReturn > 0) mode.hits += 1;
+      });
+    } else {
+      totals.betModes.miokuri.races += 1;
     }
     row.simulatedNet = row.simulatedReturn - row.simulatedStake;
     totals.simulatedStake += row.simulatedStake;
@@ -1944,6 +2038,7 @@ function renderPerformanceRaceList(rows) {
     const hitLabel = row.official
       ? row.hitPick ? `${row.hitPick.strategyLabel}${row.hitPick.strategyIndex + 1}点目で的中` : "7点内不的中"
       : row.status === "completed" ? (isFetchingResult ? "取得中" : "判定待ち") : "レース前";
+    const decision = row.betDecision || { key: "miokuri", label: "見送り", buy: false };
     const hitClass = row.official
       ? row.hitIndex >= 0 ? "hit" : "miss"
       : "pending";
@@ -1951,7 +2046,7 @@ function renderPerformanceRaceList(rows) {
       <article class="performance-race ${hitClass}">
         <div class="performance-race-head">
           <strong>${row.race}R</strong>
-          <span>${hitLabel}</span>
+          <span>${decision.label} / ${hitLabel}</span>
         </div>
         <div class="performance-result">
           <small>確定</small>
@@ -1963,6 +2058,11 @@ function renderPerformanceRaceList(rows) {
             <small>7点×${PERFORMANCE_BET_UNIT_YEN}円</small>
             <b>${formatSignedYen(row.simulatedNet)}</b>
             <span>投資 ${formatYen(row.simulatedStake)} / 回収 ${formatYen(row.simulatedReturn)}</span>
+          </div>
+          <div class="performance-money ${row.recommendedNet >= 0 ? "plus" : "minus"}">
+            <small>${decision.buy ? `${decision.label}で買う` : "見送り推奨"}</small>
+            <b>${decision.buy ? formatSignedYen(row.recommendedNet) : "0円"}</b>
+            <span>${decision.buy ? `投資 ${formatYen(row.recommendedStake)} / 回収 ${formatYen(row.recommendedReturn)}` : "買わない判断として収支対象外"}</span>
           </div>
         ` : ""}
         <div class="performance-picks">
@@ -1979,7 +2079,7 @@ function renderPerformanceRaceList(rows) {
 
 function saveLearningLog(rows) {
   const judgedRows = rows.filter((row) => row.official);
-  if (!judgedRows.length) return;
+  if (!judgedRows.length) return Promise.resolve({ events: 0 });
   let stored = {};
   try {
     stored = JSON.parse(localStorage.getItem(LEARNING_LOG_KEY) || "{}");
@@ -2022,7 +2122,7 @@ function saveLearningLog(rows) {
   if (hasChanges) {
     localStorage.setItem(LEARNING_LOG_KEY, JSON.stringify(stored));
   }
-  postLearningEvents(serverEvents);
+  return postLearningEvents(serverEvents).then(() => ({ events: serverEvents.length }));
 }
 
 function renderDailyPerformance(options = {}) {
@@ -2168,6 +2268,79 @@ async function warmMissingPerformancePrograms(requestId, allRaces) {
   if (requestId === predictionRequestId) renderDailyPerformance();
 }
 
+function getAdminBatchDate() {
+  const params = new URLSearchParams(window.location.search);
+  const date = params.get("adminBatch");
+  return /^\d{4}-\d{2}-\d{2}$/.test(date || "") ? date : "";
+}
+
+function setBatchMessage(message) {
+  loadingState.hidden = false;
+  unavailableState.hidden = true;
+  dashboard.hidden = true;
+  predictButton.disabled = true;
+  const title = loadingState.querySelector("h2");
+  if (title) title.textContent = "全会場の収支を一括集計中";
+  document.querySelector("#loadingMessage").textContent = message;
+}
+
+async function runAdminBatchSave() {
+  const batchDate = getAdminBatchDate();
+  if (!batchDate) return false;
+  activeProgramController?.abort();
+  activeProgramController = new AbortController();
+  predictionRequestId += 1;
+  isPremiumMode = true;
+  localStorage.setItem(PLAN_MODE_KEY, "premium");
+  applyPlanMode();
+  dateInput.value = batchDate;
+  renderRecentDates();
+  setBatchMessage("開催場を確認しています...");
+  await refreshVenueStatus(batchDate);
+  const statuses = venueStatusByDate[batchDate] || {};
+  const activeVenueIndexes = venues
+    .map((venue, index) => ({ venue, index, status: statuses[String(index + 1).padStart(2, "0")] }))
+    .filter((item) => item.status?.available);
+  let savedEvents = 0;
+  for (let venueIndex = 0; venueIndex < activeVenueIndexes.length; venueIndex += 1) {
+    const item = activeVenueIndexes[venueIndex];
+    venueSelect.value = String(item.index);
+    renderVenueOptions();
+    selectedRace = 1;
+    updateRaceButtonStates();
+    invalidatePerformanceCache();
+    const venueLabel = `${venueIndex + 1}/${activeVenueIndexes.length} ${item.venue.name}`;
+    setBatchMessage(`${venueLabel} の出走表・結果・展示情報を取得しています...`);
+    try {
+      await loadOfficialResultsForDay(activeProgramController.signal).catch((error) => {
+        if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
+        return null;
+      });
+      for (let race = 1; race <= 12; race += 1) {
+        setBatchMessage(`${venueLabel} ${race}R を保存中...`);
+        await loadOfficialProgramForRace(race, activeProgramController.signal, BACKGROUND_PROGRAM_TIMEOUT_MS).catch((error) => {
+          if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
+          return null;
+        });
+        await loadRaceSignals(activeProgramController.signal, race).catch((error) => {
+          if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
+          return null;
+        });
+      }
+      invalidatePerformanceCache();
+      const totals = calculateDailyPerformance();
+      const result = await saveLearningLog(totals.rows);
+      savedEvents += result?.events || 0;
+    } catch (error) {
+      if (error.name === "AbortError") break;
+      console.warn(error);
+    }
+  }
+  setBatchMessage(`保存完了: ${savedEvents}件を同期しました。管理画面へ戻ります...`);
+  window.location.href = `/admin.html?date=${encodeURIComponent(batchDate)}`;
+  return true;
+}
+
 function scheduleDailyPerformanceRefresh(requestId) {
   renderDailyPerformance({ renderList: false });
   schedulePerformanceRender({ renderList: true });
@@ -2300,12 +2473,19 @@ async function refreshOfficialResult(data, requestId) {
   }
 }
 
-setupControls();
-applyPlanMode();
-loadLearningWeights();
-runPrediction(true);
-refreshWarmupStatus();
-setInterval(refreshWarmupStatus, 60000);
+async function bootstrap() {
+  setupControls();
+  applyPlanMode();
+  loadLearningWeights();
+  const handledBatch = await runAdminBatchSave();
+  if (!handledBatch) {
+    runPrediction(true);
+  }
+  refreshWarmupStatus();
+  setInterval(refreshWarmupStatus, 60000);
+}
+
+bootstrap();
 predictButton.addEventListener("click", () => runPrediction(true));
 freePlanButton?.addEventListener("click", () => setPlanMode("free"));
 premiumPlanButton?.addEventListener("click", () => setPlanMode("premium"));
