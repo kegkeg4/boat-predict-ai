@@ -26,7 +26,7 @@
         <input id="adminDate" type="date">
       </div>
       <button id="adminReload" type="button">集計を更新</button>
-      <button id="adminBatchSave" class="admin-secondary-button" type="button">全会場を一括集計・保存</button>
+      <button id="adminBatchSave" class="admin-secondary-button" type="button">サーバーで全会場を一括集計</button>
       <p id="adminStatus">管理データを読み込みます。</p>
     </section>
 
@@ -78,7 +78,7 @@
           <tfoot id="adminTableFoot"></tfoot>
         </table>
       </div>
-      <p class="admin-note">この画面は、ブラウザ内に保存された予測ログを自動同期してから集計します。未保存の会場は収支に含みません。</p>
+      <p class="admin-note">この画面は、ブラウザ内保存ログの同期とサーバー側の自動集計ログから収支を表示します。未保存の会場は収支に含みません。</p>
     </section>
   </main>
   <script src="admin.js?v=20260615-admin-1"></script>

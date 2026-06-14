@@ -7,6 +7,7 @@ import re
 import threading
 import time
 import socket
+from itertools import permutations
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
@@ -54,6 +55,19 @@ warmup_status = {
     "finishedAt": None,
 }
 learning_lock = threading.Lock()
+admin_backfill_lock = threading.Lock()
+admin_backfill_status = {
+    "active": False,
+    "date": None,
+    "startedAt": None,
+    "finishedAt": None,
+    "currentVenue": "",
+    "completedVenues": 0,
+    "totalVenues": 0,
+    "savedEvents": 0,
+    "message": "待機中",
+}
+admin_backfill_done = set()
 
 
 def read_learning_store():
@@ -258,6 +272,247 @@ def get_admin_performance(date):
             ],
         },
     }
+
+
+def update_admin_backfill_status(**updates):
+    with admin_backfill_lock:
+        admin_backfill_status.update(updates)
+
+
+def get_admin_backfill_status():
+    with admin_backfill_lock:
+        return dict(admin_backfill_status)
+
+
+def server_boat_score(racer, signals):
+    boat = int(racer.get("boat") or 0)
+    grade_bonus = {"A1": 9, "A2": 5, "B1": 0, "B2": -3}.get(racer.get("grade"), 0)
+    score = (
+        float(racer.get("national") or 0) * 9
+        + float(racer.get("local") or 0) * 3
+        + float(racer.get("motor") or 0) * 1.4
+        + grade_bonus
+        - float(racer.get("start") or 0.18) * 22
+    )
+    if boat == 1:
+        score += 11
+    elif boat == 2:
+        score += 5
+    elif boat == 3:
+        score += 2
+    elif boat >= 5:
+        score -= 2
+    expect_scores = (signals.get("expect") or {}).get("scores") or {}
+    score += float(expect_scores.get(boat, 0)) * 0.35
+    beforeinfo = (signals.get("beforeinfo") or {}).get("racers") or {}
+    exhibitions = [
+        float(item.get("exhibition"))
+        for item in beforeinfo.values()
+        if item.get("exhibition") is not None
+    ]
+    exhibition = beforeinfo.get(boat, {}).get("exhibition")
+    if exhibitions and exhibition is not None:
+        fastest = min(exhibitions)
+        score += max(-6, min(6, (fastest - float(exhibition)) * 18))
+    return score
+
+
+def build_server_prediction_picks(racers, signals):
+    scored = [
+        {**racer, "score": server_boat_score(racer, signals)}
+        for racer in racers
+        if racer.get("boat")
+    ]
+    if len(scored) != 6:
+        return []
+    by_boat = {int(racer["boat"]): racer for racer in scored}
+    odds = (signals.get("odds") or {}).get("odds") or {}
+    tickets = []
+    for ticket in permutations(range(1, 7), 3):
+        first, second, third = ticket
+        base_score = (
+            by_boat[first]["score"] * 0.58
+            + by_boat[second]["score"] * 0.27
+            + by_boat[third]["score"] * 0.15
+        )
+        odds_key = "-".join(str(value) for value in ticket)
+        actual_odds = float(odds.get(odds_key) or 0)
+        value_score = base_score + min(actual_odds, 120) * 0.08
+        tickets.append({
+            "ticket": list(ticket),
+            "baseScore": base_score,
+            "valueScore": value_score,
+            "actualOdds": actual_odds or None,
+        })
+    solid = sorted(tickets, key=lambda item: (-item["baseScore"], item["ticket"]))[:5]
+    solid_keys = {tuple(item["ticket"]) for item in solid}
+    value_candidates = [item for item in tickets if tuple(item["ticket"]) not in solid_keys]
+    nerai = sorted(value_candidates, key=lambda item: (-item["valueScore"], item["ticket"]))[:1]
+    used_keys = solid_keys | {tuple(item["ticket"]) for item in nerai}
+    ana_candidates = [
+        item for item in tickets
+        if tuple(item["ticket"]) not in used_keys
+        and (item["actualOdds"] or 0) >= 30
+    ] or [item for item in tickets if tuple(item["ticket"]) not in used_keys]
+    ana = sorted(ana_candidates, key=lambda item: (-(item["actualOdds"] or 0), -item["valueScore"], item["ticket"]))[:1]
+    groups = [
+        ("honmei", "本命", solid),
+        ("nerai", "狙い目", nerai),
+        ("ana", "穴", ana),
+    ]
+    picks = []
+    for strategy_key, strategy_label, group in groups:
+        for index, item in enumerate(group):
+            picks.append({
+                "ticket": item["ticket"],
+                "probability": round(max(3, min(60, item["baseScore"] / 2)), 1),
+                "estimatedOdds": item["actualOdds"] or None,
+                "actualOdds": item["actualOdds"] or None,
+                "strategyKey": strategy_key,
+                "strategyLabel": strategy_label,
+                "strategyIndex": index,
+            })
+    return picks
+
+
+def build_admin_backfill_event(date, jcd, race):
+    program = load_program(date, jcd, race, should_prefetch=False)
+    race_info = next((item for item in program.get("races", []) if item.get("race") == race), None)
+    if not race_info or not race_info.get("detailed"):
+        return None
+    result_payload = load_result(date, jcd, race)
+    if not result_payload.get("available"):
+        return None
+    signals = load_signals(date, jcd, race)
+    picks = build_server_prediction_picks(race_info.get("racers", []), signals)
+    if not picks:
+        return None
+    venue = VENUE_NAMES[int(jcd) - 1]
+    result = result_payload.get("result") or {}
+    result_key = normalize_ticket(result.get("result"))
+    hit_index = next(
+        (index for index, pick in enumerate(picks) if normalize_ticket(pick.get("ticket")) == result_key),
+        -1,
+    )
+    exacta_hit = any(
+        len(pick.get("ticket") or []) >= 2
+        and pick["ticket"][0] == result["result"][0]
+        and pick["ticket"][1] == result["result"][1]
+        for pick in picks
+    )
+    leader_hit = any(
+        pick.get("ticket") and pick["ticket"][0] == result["result"][0]
+        for pick in picks
+    )
+    weather = ((signals.get("beforeinfo") or {}).get("weather") or result_payload.get("weather") or {})
+    return {
+        "key": f"{date}-{venue}-{race}",
+        "date": date,
+        "venue": venue,
+        "race": race,
+        "result": result["result"],
+        "payout": result["payout"],
+        "picks": picks,
+        "predictedLeader": picks[0]["ticket"][0] if picks else None,
+        "weather": weather.get("weather"),
+        "wind": weather.get("windSpeed"),
+        "wave": weather.get("waveHeight"),
+        "phase": "server-backfill",
+        "hitIndex": hit_index,
+        "exactaHit": exacta_hit,
+        "leaderHit": leader_hit,
+        "savedAt": datetime.now(JST).isoformat(timespec="seconds"),
+    }
+
+
+def run_admin_backfill(date):
+    update_admin_backfill_status(
+        active=True,
+        date=date,
+        startedAt=datetime.now(JST).isoformat(timespec="seconds"),
+        finishedAt=None,
+        currentVenue="",
+        completedVenues=0,
+        totalVenues=0,
+        savedEvents=0,
+        message="開催場を確認中",
+    )
+    saved_events = []
+    try:
+        venues_payload = load_venues_status(date)
+        active_jcds = [
+            jcd for jcd, status in (venues_payload.get("venues") or {}).items()
+            if status.get("available")
+        ]
+        active_jcds.sort()
+        update_admin_backfill_status(totalVenues=len(active_jcds))
+        for index, jcd in enumerate(active_jcds):
+            venue = VENUE_NAMES[int(jcd) - 1]
+            update_admin_backfill_status(
+                currentVenue=venue,
+                completedVenues=index,
+                message=f"{venue}を集計中",
+            )
+            venue_events = []
+            races = int((venues_payload.get("venues") or {}).get(jcd, {}).get("races") or 12)
+            for race in range(1, min(12, races) + 1):
+                try:
+                    event = build_admin_backfill_event(date, jcd, race)
+                    if event:
+                        venue_events.append(event)
+                except Exception:
+                    continue
+            if venue_events:
+                record_learning_events(venue_events)
+                saved_events.extend(venue_events)
+                update_admin_backfill_status(savedEvents=len(saved_events))
+            update_admin_backfill_status(completedVenues=index + 1)
+        admin_backfill_done.add(date)
+        update_admin_backfill_status(
+            active=False,
+            finishedAt=datetime.now(JST).isoformat(timespec="seconds"),
+            currentVenue="",
+            savedEvents=len(saved_events),
+            message=f"{len(saved_events)}件を保存しました",
+        )
+    except Exception as error:
+        update_admin_backfill_status(
+            active=False,
+            finishedAt=datetime.now(JST).isoformat(timespec="seconds"),
+            message=f"集計エラー: {error}",
+        )
+
+
+def schedule_admin_backfill(date, force=False):
+    with admin_backfill_lock:
+        if admin_backfill_status.get("active"):
+            return dict(admin_backfill_status)
+        if not force and date in admin_backfill_done:
+            return dict(admin_backfill_status)
+        admin_backfill_status.update({
+            "active": True,
+            "date": date,
+            "message": "集計開始待ち",
+            "startedAt": datetime.now(JST).isoformat(timespec="seconds"),
+            "finishedAt": None,
+        })
+    thread = threading.Thread(target=run_admin_backfill, args=(date,), daemon=True)
+    thread.start()
+    return get_admin_backfill_status()
+
+
+def admin_auto_backfill_worker():
+    while True:
+        now = datetime.now(JST)
+        target = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        if now.hour >= 2 and target not in admin_backfill_done:
+            schedule_admin_backfill(target)
+        time.sleep(1800)
+
+
+def schedule_admin_auto_backfill():
+    thread = threading.Thread(target=admin_auto_backfill_worker, daemon=True)
+    thread.start()
 
 
 def read_program_cache():
@@ -1119,6 +1374,15 @@ class AppHandler(SimpleHTTPRequestHandler):
             return self.send_json(get_warmup_status())
         if parsed.path == "/api/learning":
             return self.send_json(get_learning())
+        if parsed.path == "/api/admin/backfill-status":
+            return self.send_json(get_admin_backfill_status())
+        if parsed.path == "/api/admin/backfill":
+            query = parse_qs(parsed.query)
+            date = query.get("date", [""])[0]
+            force = query.get("force", ["0"])[0] == "1"
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+                return self.send_json({"error": "invalid parameters"}, 400)
+            return self.send_json(schedule_admin_backfill(date, force=force))
         if parsed.path == "/api/admin/performance":
             query = parse_qs(parsed.query)
             date = query.get("date", [""])[0]
@@ -1193,4 +1457,6 @@ if __name__ == "__main__":
     print(f"SMARTPHONE URL: http://{local_ip}:{port}/")
     if os.environ.get("BOAT_STARTUP_WARMUP", "1") != "0":
         schedule_startup_warmup()
+    if os.environ.get("BOAT_AUTO_BACKFILL", "1") != "0":
+        schedule_admin_auto_backfill()
     server.serve_forever()

@@ -6,6 +6,7 @@ const tableBody = document.querySelector("#adminTableBody");
 const tableFoot = document.querySelector("#adminTableFoot");
 const coverageBox = document.querySelector("#adminCoverage");
 const LEARNING_LOG_KEY = "boat-predict-learning-log-v1";
+let backfillPollTimer = null;
 
 function toInputDate(date) {
   return [
@@ -147,12 +148,59 @@ async function loadPerformance() {
   }
 }
 
+function renderBackfillStatus(status) {
+  if (!status?.active) {
+    if (status?.message && status.message !== "待機中") {
+      statusText.textContent = status.message;
+    }
+    batchSaveButton.disabled = false;
+    return false;
+  }
+  batchSaveButton.disabled = true;
+  const total = status.totalVenues || 0;
+  const completed = status.completedVenues || 0;
+  const venue = status.currentVenue ? ` / ${status.currentVenue}` : "";
+  statusText.textContent = `一括集計中 ${completed}/${total}場${venue} / 保存 ${status.savedEvents || 0}件`;
+  return true;
+}
+
+async function pollBackfillStatus() {
+  try {
+    const response = await fetch("/api/admin/backfill-status");
+    if (!response.ok) throw new Error(`status ${response.status}`);
+    const status = await response.json();
+    const active = renderBackfillStatus(status);
+    if (active) {
+      backfillPollTimer = setTimeout(pollBackfillStatus, 3000);
+    } else {
+      await loadPerformance();
+    }
+  } catch (error) {
+    statusText.textContent = "一括集計の状態確認に失敗しました。";
+    batchSaveButton.disabled = false;
+  }
+}
+
+async function startBackfill() {
+  clearTimeout(backfillPollTimer);
+  batchSaveButton.disabled = true;
+  statusText.textContent = "サーバー側で全会場の一括集計を開始します...";
+  try {
+    const response = await fetch(`/api/admin/backfill?date=${encodeURIComponent(dateInput.value)}&force=1`);
+    if (!response.ok) throw new Error(`backfill ${response.status}`);
+    const status = await response.json();
+    renderBackfillStatus(status);
+    backfillPollTimer = setTimeout(pollBackfillStatus, 1500);
+  } catch (error) {
+    statusText.textContent = "一括集計の開始に失敗しました。";
+    batchSaveButton.disabled = false;
+  }
+}
+
 const initialDate = new URLSearchParams(window.location.search).get("date");
 dateInput.value = /^\d{4}-\d{2}-\d{2}$/.test(initialDate || "") ? initialDate : toInputDate(new Date());
 reloadButton.addEventListener("click", loadPerformance);
-batchSaveButton.addEventListener("click", () => {
-  statusText.textContent = "全会場の一括集計画面へ移動します...";
-  window.location.href = `/?adminBatch=${encodeURIComponent(dateInput.value)}`;
-});
+batchSaveButton.addEventListener("click", startBackfill);
 dateInput.addEventListener("change", loadPerformance);
 loadPerformance();
+pollBackfillStatus();
