@@ -20,6 +20,7 @@ USER_AGENT = "Mozilla/5.0 BOAT-PREDICT-AI/1.0"
 CACHE_SECONDS = 21600
 CACHE_DIR = Path(os.environ.get("BOAT_DATA_DIR", Path(__file__).with_name(".official-cache")))
 PROGRAM_CACHE_FILE = CACHE_DIR / "programs.json"
+SCHEDULE_CACHE_FILE = CACHE_DIR / "schedules.json"
 LEARNING_FILE = CACHE_DIR / "learning.json"
 JST = timezone(timedelta(hours=9))
 BOATRACE_JCDS = [f"{number:02d}" for number in range(1, 25)]
@@ -157,6 +158,25 @@ def save_program_cache():
     temporary.replace(PROGRAM_CACHE_FILE)
 
 
+def read_schedule_cache():
+    try:
+        return json.loads(SCHEDULE_CACHE_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_schedule_cache():
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = SCHEDULE_CACHE_FILE.with_suffix(".tmp")
+    with venue_status_cache_lock:
+        snapshot = dict(venue_status_cache)
+    temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(SCHEDULE_CACHE_FILE)
+
+
+venue_status_cache.update(read_schedule_cache())
+
+
 def schedule_program_prefetch(date, jcd):
     thread = threading.Thread(
         target=warm_program_races,
@@ -191,6 +211,10 @@ def current_jst_date():
     return datetime.now(JST).strftime("%Y-%m-%d")
 
 
+def jst_date_offset(days):
+    return (datetime.now(JST) + timedelta(days=days)).strftime("%Y-%m-%d")
+
+
 def count_cached_detailed_races(date):
     now = time.time()
     total = 0
@@ -209,6 +233,10 @@ def count_cached_detailed_races(date):
 
 def count_checked_venues(date):
     now = time.time()
+    with venue_status_cache_lock:
+        cached_status = venue_status_cache.get(date)
+        if cached_status and now - cached_status.get("savedAt", 0) < CACHE_SECONDS:
+            return len(cached_status.get("payload", {}).get("venues", {}))
     with program_cache_lock:
         return sum(
             1
@@ -241,6 +269,7 @@ def schedule_startup_warmup():
 
 def startup_warmup_today():
     date = current_jst_date()
+    warmup_dates = [jst_date_offset(offset) for offset in range(3)]
     update_warmup_status(
         active=True,
         date=date,
@@ -250,11 +279,20 @@ def startup_warmup_today():
         startedAt=datetime.now(JST).isoformat(timespec="seconds"),
         finishedAt=None,
     )
-    try:
-        venues_payload = load_venues_status(date)
-        checked = len(venues_payload.get("venues", {}))
-    except Exception:
-        checked = count_checked_venues(date)
+    checked = 0
+    for warmup_date in warmup_dates:
+        try:
+            venues_payload = load_venues_status(warmup_date)
+            if warmup_date == date:
+                checked = len(venues_payload.get("venues", {}))
+                update_warmup_status(
+                    currentJcd="",
+                    completedVenues=checked,
+                    completedRaces=count_cached_detailed_races(date),
+                )
+        except Exception:
+            if warmup_date == date:
+                checked = count_checked_venues(date)
     update_warmup_status(
         currentJcd="",
         completedVenues=checked,
@@ -867,6 +905,7 @@ def load_venues_status(date):
             "savedAt": time.time(),
             "payload": payload,
         }
+    save_schedule_cache()
     return payload
 
 
