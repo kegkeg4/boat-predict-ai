@@ -20,6 +20,10 @@ services:
         value: "1"
       - key: BOAT_FETCH_TIMEOUT
         value: "8"
+      - key: BOAT_DETAIL_FETCH_TIMEOUT
+        value: "3"
+      - key: BOAT_PAST_RESULT_CACHE_SECONDS
+        value: "2592000"
       - key: BOAT_ADMIN_BACKFILL_WORKERS
         value: "4"
       - key: BOAT_DATA_DIR

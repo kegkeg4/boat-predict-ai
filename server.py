@@ -20,7 +20,9 @@ from urllib.request import Request, urlopen
 OFFICIAL_BASE = "https://www.boatrace.jp"
 USER_AGENT = "Mozilla/5.0 BOAT-PREDICT-AI/1.0"
 CACHE_SECONDS = 21600
+PAST_RESULT_CACHE_SECONDS = int(os.environ.get("BOAT_PAST_RESULT_CACHE_SECONDS", str(30 * 24 * 60 * 60)))
 FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_FETCH_TIMEOUT", "8"))
+DETAIL_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_DETAIL_FETCH_TIMEOUT", "3"))
 ADMIN_BACKFILL_WORKERS = int(os.environ.get("BOAT_ADMIN_BACKFILL_WORKERS", "4"))
 CACHE_DIR = Path(os.environ.get("BOAT_DATA_DIR", Path(__file__).with_name(".official-cache")))
 PROGRAM_CACHE_FILE = CACHE_DIR / "programs.json"
@@ -634,7 +636,9 @@ def save_results_cache():
 
 def get_result_cache_seconds(date, payload=None):
     if date < current_jst_date():
-        return CACHE_SECONDS
+        if payload and payload.get("available"):
+            return PAST_RESULT_CACHE_SECONDS
+        return 15 * 60
     if payload and payload.get("available"):
         return CACHE_SECONDS
     return 45
@@ -1377,6 +1381,10 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
                     if should_prefetch:
                         schedule_program_prefetch(date, jcd)
                     return stored["payload"]
+                if stored_race and len(stored_race.get("racers", [])) == 6:
+                    if should_prefetch:
+                        schedule_program_prefetch(date, jcd)
+                    return stored["payload"]
         elif stale_payload and stale_payload.get("available"):
             recent_payload = stale_payload
 
@@ -1388,14 +1396,14 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
     if recent_payload and recent_payload.get("races"):
         races = [dict(race) for race in recent_payload["races"]]
         try:
-            detail_html = fetch_html(detail_path)
+            detail_html = fetch_html(detail_path, timeout=DETAIL_FETCH_TIMEOUT_SECONDS)
         except Exception:
             detail_html = ""
     else:
         index_path = f"/owpc/pc/race/raceindex?hd={compact_date}&jcd={jcd}"
         with ThreadPoolExecutor(max_workers=2) as executor:
             index_future = executor.submit(fetch_html, index_path)
-            detail_future = executor.submit(fetch_html, detail_path)
+            detail_future = executor.submit(fetch_html, detail_path, CACHE_SECONDS, DETAIL_FETCH_TIMEOUT_SECONDS)
             try:
                 index_html = index_future.result()
             except Exception:

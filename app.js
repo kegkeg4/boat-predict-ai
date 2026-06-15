@@ -99,12 +99,14 @@ const OFFICIAL_SIGNAL_WEIGHT = .35;
 const PROGRAM_CACHE_KEY = "boat-predict-official-programs-v1";
 const VENUE_STATUS_CACHE_KEY = "boat-predict-venue-status-v1";
 const PREDICTION_CACHE_KEY = "boat-predict-prediction-snapshots-v1";
+const RESULT_CACHE_KEY = "boat-predict-official-results-v1";
 const LEARNING_LOG_KEY = "boat-predict-learning-log-v1";
 const LEARNING_WEIGHTS_KEY = "boat-predict-learning-weights-v1";
 const PLAN_MODE_KEY = "boat-predict-plan-mode";
 const PROGRAM_CACHE_MS = 6 * 60 * 60 * 1000;
 const VENUE_STATUS_CACHE_MS = 6 * 60 * 60 * 1000;
 const PREDICTION_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
+const RESULT_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
 const PERFORMANCE_BET_UNIT_YEN = 100;
 const RESULT_UNAVAILABLE_CACHE_MS = 15 * 1000;
 const REQUEST_TIMEOUT_MS = 10000;
@@ -249,7 +251,7 @@ let predictionByRaceCache = {};
 let isPremiumMode = localStorage.getItem(PLAN_MODE_KEY) === "premium";
 let venueStatusByDate = loadStoredVenueStatus();
 const dynamicPrograms = loadStoredPrograms();
-const dynamicResults = {};
+const dynamicResults = loadStoredResults();
 const dynamicRaceSignals = {};
 const resultUnavailableCache = {};
 const resultRequestCache = {};
@@ -315,6 +317,43 @@ function storeProgram(key) {
   stored[key] = { savedAt: Date.now(), program: dynamicPrograms[key] };
   localStorage.setItem(PROGRAM_CACHE_KEY, JSON.stringify(stored));
   invalidatePerformanceCache();
+}
+
+function loadStoredResults() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(RESULT_CACHE_KEY) || "{}");
+    return Object.fromEntries(
+      Object.entries(stored)
+        .filter(([, item]) =>
+          item?.savedAt
+          && Date.now() - item.savedAt < RESULT_CACHE_MS
+          && isValidOfficialResult(item.result)
+        )
+        .map(([key, item]) => [key, item.result])
+    );
+  } catch {
+    return {};
+  }
+}
+
+function storeResult(key, result) {
+  if (!isValidOfficialResult(result)) return;
+  let stored = {};
+  try {
+    stored = JSON.parse(localStorage.getItem(RESULT_CACHE_KEY) || "{}");
+  } catch {
+    stored = {};
+  }
+  stored[key] = { savedAt: Date.now(), result };
+  const entries = Object.entries(stored)
+    .filter(([, item]) => item?.savedAt && Date.now() - item.savedAt < RESULT_CACHE_MS)
+    .sort((a, b) => b[1].savedAt - a[1].savedAt)
+    .slice(0, 2500);
+  try {
+    localStorage.setItem(RESULT_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // Storage can be full on mobile; prediction must continue without local result cache.
+  }
 }
 
 function getPredictionSnapshotKey(dateString = dateInput.value, venueIndex = venueSelect.value, race = selectedRace) {
@@ -618,15 +657,24 @@ async function loadOfficialProgramForRace(race, signal, timeoutMs = REQUEST_TIME
   const key = getProgramKey();
   const cached = dynamicPrograms[key];
   const cachedRace = cached?.races.find((item) => item.race === race);
-  if (cachedRace?.detailed) return cached;
+  const hasUsableCachedRace = cachedRace && Array.isArray(cachedRace.racers) && cachedRace.racers.length === 6;
+  if (cachedRace?.detailed || hasUsableCachedRace) return cached;
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
-  const response = await fetchWithTimeout(
-    `/api/program?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}&race=${race}`,
-    { signal, timeoutMs }
-  );
-  if (!response.ok) throw new Error(`公式データ取得エラー: ${response.status}`);
-  const program = await response.json();
-  if (program.error) throw new Error(program.error);
+  let program;
+  try {
+    const response = await fetchWithTimeout(
+      `/api/program?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}&race=${race}`,
+      { signal, timeoutMs }
+    );
+    if (!response.ok) throw new Error(`公式データ取得エラー: ${response.status}`);
+    program = await response.json();
+    if (program.error) throw new Error(program.error);
+  } catch (error) {
+    if (cachedRace && Array.isArray(cachedRace.racers) && cachedRace.racers.length >= 6) {
+      return cached;
+    }
+    throw error;
+  }
   if (!cached) {
     dynamicPrograms[key] = program;
   } else {
@@ -1062,6 +1110,7 @@ function applyOfficialResultPayload(race, payload) {
       ...payload.result,
       payouts: Array.isArray(payload.payouts) ? payload.payouts : []
     };
+    storeResult(key, dynamicResults[key]);
     delete resultUnavailableCache[key];
     invalidatePerformanceCache();
     renderManshuBanner();
@@ -1374,8 +1423,27 @@ function renderRace(data) {
       ? `第一ターンは${first.boat}号艇の差し・まくり差しが決まる展開を想定。`
       : `第一ターンは外の攻めで隊形が崩れる展開を想定し、内の残りと外の連動を評価します。`;
   const profile = buildBetDecision(data);
+  const strategyGroups = buildTicketStrategyGroups(data);
+  const [honmeiGroup, neraiGroup, anaGroup] = strategyGroups;
+  const formatPickReason = (group, label) => {
+    const pick = group?.picks?.[0];
+    if (!pick) return `${label}は、公式オッズや展示情報がそろい次第もう一度評価します。`;
+    const ticket = pick.ticket.map((racer) => `${racer.boat}号艇`).join("→");
+    const oddsLabel = pick.actualOdds ? "公式オッズ" : "推定オッズ";
+    const leader = pick.ticket[0];
+    const support = pick.ticket.slice(1).map((racer) => `${racer.boat}号艇`).join("・");
+    return `${label}は${ticket}。${leader.name}の1着評価、${support}の2・3着残り、${oddsLabel}${pick.estimatedOdds.toFixed(1)}倍と期待値${Math.round(pick.valueScore)}を見て選んでいます。`;
+  };
+  const conditionComment = [
+    venueComment,
+    windComment,
+    Number.isFinite(wave) ? `波高は${wave.toFixed(0)}cmで、旋回ロスと差し残りのバランスを補正。` : "波高は公式未取得のため、会場傾向と選手力を優先。",
+    phase.exhibitionAvailable ? "展示タイムが出ているため直前気配を加点済み。" : "展示タイム未公開のため、展示後は舟足を加えて再計算します。"
+  ].filter(Boolean).join("");
   document.querySelector("#scenarioText").textContent =
-    `${leadComment}${venueComment}${windComment}${turnComment}${profile.label}として、的中率だけでなく期待値と回収率を優先します。`;
+    `${leadComment}${conditionComment}${turnComment}\n`
+    + `${formatPickReason(honmeiGroup, "本命")} ${formatPickReason(neraiGroup, "狙い目")} ${formatPickReason(anaGroup, "穴")}\n`
+    + `${profile.label}として、的中率だけでなく期待値と回収率を優先します。トリガミになりやすい低配当は評価を下げ、荒れそうな条件では外艇や人気薄の3着残りまで見ています。`;
 
   const factors = [
     `${first.boat}号艇 当地勝率 ${first.local.toFixed(2)}`,
@@ -2438,7 +2506,7 @@ async function warmMissingPerformancePrograms(requestId, allRaces) {
   const key = getProgramKey();
   const missingProgramRaces = allRaces.filter((race) => {
     const cachedRace = dynamicPrograms[key]?.races.find((item) => item.race === race);
-    return !cachedRace?.detailed;
+    return !(cachedRace?.detailed || (Array.isArray(cachedRace?.racers) && cachedRace.racers.length === 6));
   });
   if (!missingProgramRaces.length) return;
   await runWithConcurrency(
@@ -2528,18 +2596,6 @@ async function runAdminBatchSave() {
   setBatchMessage(`保存完了: ${savedEvents}件を同期しました。管理画面へ戻ります...`);
   window.location.href = `/admin.html?date=${encodeURIComponent(batchDate)}`;
   return true;
-}
-
-async function preloadSelectedHistoricalResult(signal) {
-  if (!isPastDate() || !isRaceCompleted(selectedRace) || getVerifiedResult(selectedRace)) return;
-  const resultLoad = loadOfficialResultsForDay(signal, [selectedRace]).catch((error) => {
-    if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
-    return null;
-  });
-  await Promise.race([
-    resultLoad,
-    new Promise((resolve) => setTimeout(resolve, 900))
-  ]);
 }
 
 function scheduleDailyPerformanceRefresh(requestId) {
@@ -2657,8 +2713,6 @@ async function runPrediction(withLoading = true) {
   currentData = data;
   storePredictionSnapshot(data);
   unavailableState.hidden = true;
-  await preloadSelectedHistoricalResult(activeProgramController.signal);
-  if (requestId !== predictionRequestId) return;
   updateRaceButtonStates();
   if (!withLoading) {
     renderRace(data);
