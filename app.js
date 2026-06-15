@@ -2385,6 +2385,14 @@ function saveLearningLog(rows) {
         venueImpact: racer.venueImpact
       }))
     : [];
+  const normalizeLearningOdds = (oddsMap) => {
+    if (!oddsMap || typeof oddsMap !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(oddsMap)
+        .map(([ticket, odds]) => [ticket, Number(odds)])
+        .filter(([ticket, odds]) => /^\d-\d-\d$/.test(ticket) && Number.isFinite(odds) && odds > 0)
+    );
+  };
   judgedRows.forEach((row) => {
     const key = `${dateInput.value}-${venue}-${row.race}`;
     const normalizedPicks = normalizeLearningPicks(row.prediction.picks);
@@ -2399,6 +2407,7 @@ function saveLearningLog(rows) {
       payout: row.official.payout,
       picks: normalizedPicks,
       racers: normalizeLearningRacers(row.prediction.data?.racers),
+      odds3t: normalizeLearningOdds(row.prediction.data?.oddsMap),
       betDecision: {
         key: decision.key,
         label: decision.label,

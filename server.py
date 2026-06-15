@@ -571,6 +571,7 @@ def build_admin_backfill_event(
     if not result_payload.get("available"):
         return None
     signals = load_signals(date, jcd, race, timeout=signal_timeout)
+    odds3t = (signals.get("odds") or {}).get("odds") or {}
     beforeinfo_racers = (signals.get("beforeinfo") or {}).get("racers") or {}
     for racer in racers:
         beforeinfo = beforeinfo_racers.get(racer["boat"], {})
@@ -610,6 +611,7 @@ def build_admin_backfill_event(
         "payout": result["payout"],
         "picks": picks,
         "racers": racers,
+        "odds3t": odds3t,
         "betDecision": bet_decision,
         "predictedLeader": picks[0]["ticket"][0] if picks else None,
         "weather": weather.get("weather"),
