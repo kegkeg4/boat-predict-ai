@@ -2105,6 +2105,7 @@ function saveLearningLog(rows) {
       wind: row.prediction.data?.wind,
       wave: row.prediction.data?.wave,
       phase: row.prediction.data?.phase?.key,
+      source: "prediction-screen",
       hitIndex: row.hitIndex,
       exactaHit: row.exactaHit,
       leaderHit: row.leaderHit,

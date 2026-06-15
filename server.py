@@ -20,6 +20,8 @@ from urllib.request import Request, urlopen
 OFFICIAL_BASE = "https://www.boatrace.jp"
 USER_AGENT = "Mozilla/5.0 BOAT-PREDICT-AI/1.0"
 CACHE_SECONDS = 21600
+FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_FETCH_TIMEOUT", "8"))
+ADMIN_BACKFILL_WORKERS = int(os.environ.get("BOAT_ADMIN_BACKFILL_WORKERS", "4"))
 CACHE_DIR = Path(os.environ.get("BOAT_DATA_DIR", Path(__file__).with_name(".official-cache")))
 PROGRAM_CACHE_FILE = CACHE_DIR / "programs.json"
 SCHEDULE_CACHE_FILE = CACHE_DIR / "schedules.json"
@@ -154,6 +156,24 @@ def record_learning_events(events):
             key = event.get("key")
             if not key:
                 continue
+            incoming_source = event.get("source") or (
+                "server-backfill" if event.get("phase") == "server-backfill" else "prediction-screen"
+            )
+            event["source"] = incoming_source
+            existing = stored_events.get(key)
+            if isinstance(existing, dict):
+                existing_source = existing.get("source") or (
+                    "server-backfill" if existing.get("phase") == "server-backfill" else "prediction-screen"
+                )
+                if incoming_source == "server-backfill":
+                    continue
+                if existing_source == "prediction-screen" and incoming_source != "prediction-screen":
+                    continue
+                if existing_source == incoming_source:
+                    existing_saved_at = str(existing.get("savedAt") or "")
+                    incoming_saved_at = str(event.get("savedAt") or "")
+                    if existing_saved_at and incoming_saved_at and existing_saved_at > incoming_saved_at:
+                        continue
             stored_events[key] = event
         store["weights"] = recompute_learning_weights(stored_events)
         store["updatedAt"] = datetime.now(JST).isoformat(timespec="seconds")
@@ -284,6 +304,11 @@ def get_admin_backfill_status():
         return dict(admin_backfill_status)
 
 
+def existing_learning_keys():
+    store = read_learning_store()
+    return set((store.get("events") or {}).keys())
+
+
 def server_boat_score(racer, signals):
     boat = int(racer.get("boat") or 0)
     grade_bonus = {"A1": 9, "A2": 5, "B1": 0, "B2": -3}.get(racer.get("grade"), 0)
@@ -378,13 +403,29 @@ def build_server_prediction_picks(racers, signals):
 def build_admin_backfill_event(date, jcd, race):
     program = load_program(date, jcd, race, should_prefetch=False)
     race_info = next((item for item in program.get("races", []) if item.get("race") == race), None)
-    if not race_info or not race_info.get("detailed"):
+    if not race_info:
         return None
-    result_payload = load_result(date, jcd, race)
+    racers = race_info.get("racers") or []
+    if len(racers) != 6:
+        return None
+    racers = [
+        {
+            "boat": index + 1,
+            "registration": racer.get("registration"),
+            "name": racer.get("name"),
+            "grade": racer.get("grade", ""),
+            "start": racer.get("start"),
+            "national": racer.get("national"),
+            "local": racer.get("local"),
+            "motor": racer.get("motor"),
+        }
+        for index, racer in enumerate(racers)
+    ]
+    result_payload = load_result(date, jcd, race, timeout=14)
     if not result_payload.get("available"):
         return None
-    signals = load_signals(date, jcd, race)
-    picks = build_server_prediction_picks(race_info.get("racers", []), signals)
+    signals = load_signals(date, jcd, race, timeout=5)
+    picks = build_server_prediction_picks(racers, signals)
     if not picks:
         return None
     venue = VENUE_NAMES[int(jcd) - 1]
@@ -418,6 +459,7 @@ def build_admin_backfill_event(date, jcd, race):
         "wind": weather.get("windSpeed"),
         "wave": weather.get("waveHeight"),
         "phase": "server-backfill",
+        "source": "server-backfill",
         "hitIndex": hit_index,
         "exactaHit": exacta_hit,
         "leaderHit": leader_hit,
@@ -446,6 +488,7 @@ def run_admin_backfill(date):
         ]
         active_jcds.sort()
         update_admin_backfill_status(totalVenues=len(active_jcds))
+        existing_keys = existing_learning_keys()
         for index, jcd in enumerate(active_jcds):
             venue = VENUE_NAMES[int(jcd) - 1]
             update_admin_backfill_status(
@@ -453,18 +496,36 @@ def run_admin_backfill(date):
                 completedVenues=index,
                 message=f"{venue}を集計中",
             )
-            venue_events = []
             races = int((venues_payload.get("venues") or {}).get(jcd, {}).get("races") or 12)
-            for race in range(1, min(12, races) + 1):
-                try:
-                    event = build_admin_backfill_event(date, jcd, race)
-                    if event:
-                        venue_events.append(event)
-                except Exception:
-                    continue
+            race_numbers = [
+                race for race in range(1, min(12, races) + 1)
+                if f"{date}-{venue}-{race}" not in existing_keys
+            ]
+            venue_events = []
+            if not race_numbers:
+                update_admin_backfill_status(completedVenues=index + 1)
+                continue
+            workers = max(1, min(ADMIN_BACKFILL_WORKERS, len(race_numbers)))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(build_admin_backfill_event, date, jcd, race): race
+                    for race in race_numbers
+                }
+                for completed_races, future in enumerate(as_completed(futures), start=1):
+                    try:
+                        event = future.result()
+                        if event:
+                            venue_events.append(event)
+                    except Exception:
+                        pass
+                    update_admin_backfill_status(
+                        currentVenue=f"{venue} {completed_races}/{len(race_numbers)}R",
+                        message=f"{venue}を集計中",
+                    )
             if venue_events:
                 record_learning_events(venue_events)
                 saved_events.extend(venue_events)
+                existing_keys.update(event["key"] for event in venue_events if event.get("key"))
                 update_admin_backfill_status(savedEvents=len(saved_events))
             update_admin_backfill_status(completedVenues=index + 1)
         admin_backfill_done.add(date)
@@ -689,7 +750,7 @@ def get_fetch_lock(path):
         return fetch_locks.setdefault(path, threading.Lock())
 
 
-def fetch_html(path, cache_seconds=CACHE_SECONDS, timeout=12):
+def fetch_html(path, cache_seconds=CACHE_SECONDS, timeout=FETCH_TIMEOUT_SECONDS):
     cached = cache.get(path)
     if cached and time.time() - cached[0] < cache_seconds:
         return cached[1]
@@ -1094,7 +1155,7 @@ def parse_odds3t(html_text):
     }
 
 
-def load_signals(date, jcd, race):
+def load_signals(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
     compact_date = date.replace("-", "")
     paths = {
         "expect": (f"/owpc/pc/race/pcexpect?rno={race}&jcd={jcd}&hd={compact_date}", 600),
@@ -1104,7 +1165,7 @@ def load_signals(date, jcd, race):
     html = {}
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {
-            name: executor.submit(fetch_html, path, cache_seconds)
+            name: executor.submit(fetch_html, path, cache_seconds, timeout)
             for name, (path, cache_seconds) in paths.items()
         }
         for name, future in futures.items():
@@ -1213,11 +1274,11 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
     return payload
 
 
-def load_result(date, jcd, race):
+def load_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
     compact_date = date.replace("-", "")
     path = f"/owpc/pc/race/raceresult?rno={race}&jcd={jcd}&hd={compact_date}"
     result_cache_seconds = CACHE_SECONDS if date < current_jst_date() else 60
-    html_text = fetch_html(path, cache_seconds=result_cache_seconds)
+    html_text = fetch_html(path, cache_seconds=result_cache_seconds, timeout=timeout)
     result = parse_result(html_text)
     weather = parse_weather(html_text)
     return {

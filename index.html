@@ -146,6 +146,35 @@
       <div id="dashboard">
         <section id="rainbowManshuBanner" class="rainbow-manshu-banner" hidden></section>
 
+        <section id="resultCard" class="card result-card" hidden>
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">OFFICIAL RESULT</p>
+              <h2>確定結果と予測比較</h2>
+            </div>
+            <span id="resultHitBadge" class="result-hit-badge"></span>
+          </div>
+          <div class="result-grid">
+            <div>
+              <small>確定着順</small>
+              <div id="officialResult" class="official-result"></div>
+            </div>
+            <div class="result-stat">
+              <small>3連単払戻</small>
+              <strong id="resultPayout"></strong>
+            </div>
+            <div class="result-stat">
+              <small>予測順位</small>
+              <strong id="resultPredictionRank"></strong>
+            </div>
+            <div class="result-stat">
+              <small>予測時点の評価</small>
+              <strong id="resultEvaluation"></strong>
+            </div>
+          </div>
+          <p id="resultComment" class="result-comment"></p>
+        </section>
+
         <section class="race-summary">
           <div>
             <p id="summaryMeta" class="eyebrow"></p>
@@ -179,6 +208,18 @@
               <div><small>水面傾向</small><strong id="waterValue"></strong></div>
             </div>
           </div>
+        </section>
+
+        <section id="betDecisionCard" class="bet-decision-card">
+          <div>
+            <p class="eyebrow">BET DECISION</p>
+            <h2>勝負判定 <span id="betDecisionLabel">判定中</span></h2>
+          </div>
+          <div class="bet-decision-body">
+            <strong id="betDecisionAction">公式データを確認中</strong>
+            <p id="betDecisionReason">期待値・堅め度・穴気配・水面条件から買う/見送るを判定します。</p>
+          </div>
+          <div id="betDecisionTickets" class="bet-decision-tickets"></div>
         </section>
 
         <section class="prediction-layout">
@@ -282,35 +323,6 @@
           <p class="section-description">的中確率だけでなく、取得できた公式3連単オッズとのバランスから買い目の妙味を比較します。</p>
           <div id="valuePicks" class="value-picks"></div>
           <p class="data-caution">無料表示では一部表示。プレミアムでは本命5点・狙い目1点・穴1点、公式オッズ反映・展示後再計算を開放します。</p>
-        </section>
-
-        <section id="resultCard" class="card result-card" hidden>
-          <div class="card-heading">
-            <div>
-              <p class="eyebrow">OFFICIAL RESULT</p>
-              <h2>確定結果と予測比較</h2>
-            </div>
-            <span id="resultHitBadge" class="result-hit-badge"></span>
-          </div>
-          <div class="result-grid">
-            <div>
-              <small>確定着順</small>
-              <div id="officialResult" class="official-result"></div>
-            </div>
-            <div class="result-stat">
-              <small>3連単払戻</small>
-              <strong id="resultPayout"></strong>
-            </div>
-            <div class="result-stat">
-              <small>予測順位</small>
-              <strong id="resultPredictionRank"></strong>
-            </div>
-            <div class="result-stat">
-              <small>予測時点の評価</small>
-              <strong id="resultEvaluation"></strong>
-            </div>
-          </div>
-          <p id="resultComment" class="result-comment"></p>
         </section>
 
         <section id="raceRanking" class="card ranking-card">

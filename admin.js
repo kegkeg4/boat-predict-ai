@@ -118,6 +118,7 @@ async function syncLocalLearningLog() {
   if (!events.length) return 0;
   const response = await fetch("/api/learning", {
     method: "POST",
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ events })
   });
@@ -129,10 +130,10 @@ async function loadPerformance() {
   statusText.textContent = "集計中...";
   reloadButton.disabled = true;
   try {
-    statusText.textContent = "ブラウザ内の保存済みログを同期中...";
-    const synced = await syncLocalLearningLog();
-    statusText.textContent = synced ? `${synced}件を同期して集計中...` : "集計中...";
-    const response = await fetch(`/api/admin/performance?date=${encodeURIComponent(dateInput.value)}`);
+    statusText.textContent = "保存済みの収支データを集計中...";
+    const response = await fetch(`/api/admin/performance?date=${encodeURIComponent(dateInput.value)}`, {
+      credentials: "same-origin",
+    });
     if (!response.ok) throw new Error(`管理データ取得エラー ${response.status}`);
     const payload = await response.json();
     renderPerformance(payload);
@@ -166,7 +167,9 @@ function renderBackfillStatus(status) {
 
 async function pollBackfillStatus() {
   try {
-    const response = await fetch("/api/admin/backfill-status");
+    const response = await fetch("/api/admin/backfill-status", {
+      credentials: "same-origin",
+    });
     if (!response.ok) throw new Error(`status ${response.status}`);
     const status = await response.json();
     const active = renderBackfillStatus(status);
@@ -176,7 +179,7 @@ async function pollBackfillStatus() {
       await loadPerformance();
     }
   } catch (error) {
-    statusText.textContent = "一括集計の状態確認に失敗しました。";
+    statusText.textContent = `一括集計の状態確認に失敗しました。${error.message ? ` (${error.message})` : ""}`;
     batchSaveButton.disabled = false;
   }
 }
@@ -186,13 +189,15 @@ async function startBackfill() {
   batchSaveButton.disabled = true;
   statusText.textContent = "サーバー側で全会場の一括集計を開始します...";
   try {
-    const response = await fetch(`/api/admin/backfill?date=${encodeURIComponent(dateInput.value)}&force=1`);
+    const response = await fetch(`/api/admin/backfill?date=${encodeURIComponent(dateInput.value)}&force=1`, {
+      credentials: "same-origin",
+    });
     if (!response.ok) throw new Error(`backfill ${response.status}`);
     const status = await response.json();
     renderBackfillStatus(status);
     backfillPollTimer = setTimeout(pollBackfillStatus, 1500);
   } catch (error) {
-    statusText.textContent = "一括集計の開始に失敗しました。";
+    statusText.textContent = `一括集計の開始に失敗しました。${error.message ? ` (${error.message})` : ""}`;
     batchSaveButton.disabled = false;
   }
 }
