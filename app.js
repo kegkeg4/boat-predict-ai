@@ -98,11 +98,13 @@ const venueCourseProfiles = {
 const OFFICIAL_SIGNAL_WEIGHT = .35;
 const PROGRAM_CACHE_KEY = "boat-predict-official-programs-v1";
 const VENUE_STATUS_CACHE_KEY = "boat-predict-venue-status-v1";
+const PREDICTION_CACHE_KEY = "boat-predict-prediction-snapshots-v1";
 const LEARNING_LOG_KEY = "boat-predict-learning-log-v1";
 const LEARNING_WEIGHTS_KEY = "boat-predict-learning-weights-v1";
 const PLAN_MODE_KEY = "boat-predict-plan-mode";
 const PROGRAM_CACHE_MS = 6 * 60 * 60 * 1000;
 const VENUE_STATUS_CACHE_MS = 6 * 60 * 60 * 1000;
+const PREDICTION_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
 const PERFORMANCE_BET_UNIT_YEN = 100;
 const RESULT_UNAVAILABLE_CACHE_MS = 15 * 1000;
 const REQUEST_TIMEOUT_MS = 10000;
@@ -315,6 +317,44 @@ function storeProgram(key) {
   invalidatePerformanceCache();
 }
 
+function getPredictionSnapshotKey(dateString = dateInput.value, venueIndex = venueSelect.value, race = selectedRace) {
+  return `${dateString}-${venueIndex}-${race}`;
+}
+
+function readPredictionSnapshotStore() {
+  try {
+    return JSON.parse(localStorage.getItem(PREDICTION_CACHE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function writePredictionSnapshotStore(store) {
+  const entries = Object.entries(store)
+    .filter(([, item]) => item?.savedAt && Date.now() - item.savedAt < PREDICTION_CACHE_MS)
+    .sort(([, a], [, b]) => (b.savedAt || 0) - (a.savedAt || 0))
+    .slice(0, 240);
+  localStorage.setItem(PREDICTION_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
+}
+
+function getCachedPredictionSnapshot() {
+  const item = readPredictionSnapshotStore()[getPredictionSnapshotKey()];
+  if (!item?.data || !item.savedAt) return null;
+  if (Date.now() - item.savedAt > PREDICTION_CACHE_MS) return null;
+  if (!Array.isArray(item.data.racers) || !Array.isArray(item.data.ranking)) return null;
+  return item.data;
+}
+
+function storePredictionSnapshot(data) {
+  if (!data?.racers?.length || !data?.ranking?.length) return;
+  const store = readPredictionSnapshotStore();
+  store[getPredictionSnapshotKey()] = {
+    savedAt: Date.now(),
+    data
+  };
+  writePredictionSnapshotStore(store);
+}
+
 function createTimeoutError() {
   const error = new Error("公式データ取得がタイムアウトしました");
   error.name = "TimeoutError";
@@ -483,6 +523,14 @@ function dateFromOffset(offset) {
   return toInputDate(date);
 }
 
+function isPastDate(dateString = dateInput.value) {
+  if (!dateString) return false;
+  const selectedDate = new Date(`${dateString}T00:00:00`);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return selectedDate < today;
+}
+
 function getDayResults(dateString = dateInput.value) {
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
   return verifiedOfficialResults[`${dateString}-${jcd}`] || null;
@@ -617,6 +665,7 @@ async function refreshRaceSignals(data, requestId) {
     const updatedData = buildRaceData();
     if (!updatedData) return;
     currentData = updatedData;
+    storePredictionSnapshot(updatedData);
     renderRace(updatedData);
     renderOfficialResult(updatedData);
   } catch (error) {
@@ -2367,13 +2416,13 @@ async function refreshDailyPerformanceResults(requestId) {
     }
 
     renderDailyPerformance();
-    warmMissingPerformancePrograms(requestId, allRaces);
   } finally {
     performanceRefreshInFlight = false;
   }
 }
 
 async function warmMissingPerformancePrograms(requestId, allRaces) {
+  if (!isPremiumMode || isPastDate()) return;
   const key = getProgramKey();
   const missingProgramRaces = allRaces.filter((race) => {
     const cachedRace = dynamicPrograms[key]?.races.find((item) => item.race === race);
@@ -2469,6 +2518,18 @@ async function runAdminBatchSave() {
   return true;
 }
 
+async function preloadSelectedHistoricalResult(signal) {
+  if (!isPastDate() || !isRaceCompleted(selectedRace) || getVerifiedResult(selectedRace)) return;
+  const resultLoad = loadOfficialResultsForDay(signal, [selectedRace]).catch((error) => {
+    if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
+    return null;
+  });
+  await Promise.race([
+    resultLoad,
+    new Promise((resolve) => setTimeout(resolve, 900))
+  ]);
+}
+
 function scheduleDailyPerformanceRefresh(requestId) {
   renderDailyPerformance({ renderList: false });
   schedulePerformanceRender({ renderList: true });
@@ -2480,7 +2541,7 @@ function scheduleDailyPerformanceRefresh(requestId) {
     if (requestId === predictionRequestId) {
       refreshDailyPerformanceResults(requestId);
     }
-  }, 500);
+  }, isPastDate() ? 1200 : 1800);
 }
 
 function schedulePostPredictionFetches(data, requestId) {
@@ -2507,13 +2568,24 @@ async function runPrediction(withLoading = true) {
     "公式出走表を未取得です";
   document.querySelector("#unavailableState p").textContent =
     "選手や成績を推測で表示せず、公式番組を取得できた開催だけ予測を表示します。";
+  const cachedPrediction = getCachedPredictionSnapshot();
   if (withLoading) {
-    dashboard.hidden = true;
-    unavailableState.hidden = true;
-    loadingState.hidden = false;
-    predictButton.disabled = true;
-    document.querySelector("#loadingMessage").textContent =
-      "BOAT RACE公式の出走表を取得しています...";
+    if (cachedPrediction) {
+      currentData = cachedPrediction;
+      unavailableState.hidden = true;
+      loadingState.hidden = true;
+      dashboard.hidden = false;
+      predictButton.disabled = false;
+      updateRaceButtonStates();
+      renderRace(cachedPrediction);
+    } else {
+      dashboard.hidden = true;
+      unavailableState.hidden = true;
+      loadingState.hidden = false;
+      predictButton.disabled = true;
+      document.querySelector("#loadingMessage").textContent =
+        "BOAT RACE公式の出走表を取得しています...";
+    }
   }
   let programLoadError = null;
   try {
@@ -2556,7 +2628,10 @@ async function runPrediction(withLoading = true) {
     return;
   }
   currentData = data;
+  storePredictionSnapshot(data);
   unavailableState.hidden = true;
+  await preloadSelectedHistoricalResult(activeProgramController.signal);
+  if (requestId !== predictionRequestId) return;
   updateRaceButtonStates();
   if (!withLoading) {
     renderRace(data);
@@ -2586,6 +2661,7 @@ async function refreshOfficialResult(data, requestId) {
     const updatedData = buildRaceData();
     if (updatedData) {
       currentData = updatedData;
+      storePredictionSnapshot(updatedData);
       renderRace(updatedData);
       data = updatedData;
     }
