@@ -2023,17 +2023,20 @@ function buildBetDecision(data, groups = buildTicketStrategyGroups(data), race =
   const topHonmei = groups.find((group) => group.key === "honmei")?.picks?.[0];
   const topAna = groups.find((group) => group.key === "ana")?.picks?.[0];
 
-  if (!best || best.valueScore < 78) {
+  if (!best || best.valueScore < 72) {
     return { key: "miokuri", label: "見送り", buy: false, strategyKeys: [], text: "期待値が低く、買うほど回収率を削りやすいレースです。" };
   }
   if (topAna && tendency.upset >= 66 && topAna.estimatedOdds >= 25 && laneOne?.probability < 30 && topAna.valueScore >= 88) {
     return { key: "ana", label: "穴狙い", buy: true, strategyKeys: BET_MODE_CONFIG.ana.strategyKeys, text: `穴気配${Math.round(tendency.upset)}。高配当候補を穴1点だけに絞る判断です。` };
   }
-  if (best.valueScore >= 115 && positiveCount >= 2 && waterRisk <= 8) {
+  if (best.valueScore >= 115 && positiveCount >= 1 && waterRisk <= 10) {
     return { key: "shobu", label: "勝負", buy: true, strategyKeys: BET_MODE_CONFIG.shobu.strategyKeys, text: `期待値${best.valueScore.toFixed(0)}、妙味候補${positiveCount}点。本命5点＋狙い目1点で勝負します。` };
   }
-  if (topHonmei && laneOne?.probability >= 30 && tendency.solid >= 66 && leaderGap >= 8 && waterRisk <= 7 && topHonmei.estimatedOdds >= 4.5) {
+  if (topHonmei && laneOne?.probability >= 30 && tendency.solid >= 60 && leaderGap >= 6 && waterRisk <= 10 && topHonmei.estimatedOdds >= 2.5) {
     return { key: "kenjitsu", label: "堅実", buy: true, strategyKeys: BET_MODE_CONFIG.kenjitsu.strategyKeys, text: `堅め度${Math.round(tendency.solid)}。本命5点だけで相手を絞るレースです。` };
+  }
+  if (best.valueScore >= 96 && waterRisk <= 10) {
+    return { key: "kenjitsu", label: "絞り", buy: true, strategyKeys: BET_MODE_CONFIG.kenjitsu.strategyKeys, text: `最高期待値${best.valueScore.toFixed(0)}。本命5点で軽めに拾うレースです。` };
   }
   return { key: "miokuri", label: "見送り", buy: false, strategyKeys: [], text: `最高期待値${best.valueScore.toFixed(0)}。買い条件が足りないため、無理に手を出さない判断です。` };
 }
