@@ -246,6 +246,10 @@ def normalize_bet_decision(event, picks):
         }
     if not picks:
         return {"key": "miokuri", "label": labels["miokuri"], "buy": False, "strategyKeys": []}
+    try:
+        water_risk = float(event.get("wind") or 0) + float(event.get("wave") or 0) * 0.7
+    except (TypeError, ValueError):
+        water_risk = 0
     best = max(picks, key=pick_value_score)
     best_score = pick_value_score(best)
     positive_count = sum(
@@ -260,9 +264,9 @@ def normalize_bet_decision(event, picks):
         return {"key": "miokuri", "label": labels["miokuri"], "buy": False, "strategyKeys": []}
     if top_ana and top_ana_odds >= 25 and top_ana_score >= 88:
         return {"key": "ana", "label": labels["ana"], "buy": True, "strategyKeys": ["ana"]}
-    if best_score >= 115 and positive_count >= 1:
+    if best_score >= 115 and positive_count >= 1 and water_risk <= 10:
         return {"key": "shobu", "label": labels["shobu"], "buy": True, "strategyKeys": ["honmei", "nerai"]}
-    if best_score >= 96:
+    if best_score >= 96 and water_risk <= 10:
         return {"key": "kenjitsu", "label": labels["kenjitsu"], "buy": True, "strategyKeys": ["honmei"]}
     return {"key": "miokuri", "label": labels["miokuri"], "buy": False, "strategyKeys": []}
 
@@ -461,6 +465,9 @@ def server_boat_score(racer, signals):
 
 
 def build_server_prediction_picks(racers, signals):
+    def clamp_value(value, lower, upper):
+        return max(lower, min(upper, value))
+
     scored = [
         {**racer, "score": server_boat_score(racer, signals)}
         for racer in racers
@@ -487,6 +494,18 @@ def build_server_prediction_picks(racers, signals):
             "valueScore": value_score,
             "actualOdds": actual_odds or None,
         })
+    base_values = [item["baseScore"] for item in tickets]
+    min_base = min(base_values)
+    max_base = max(base_values)
+    base_spread = max(1, max_base - min_base)
+    boat_scores = sorted((racer["score"] for racer in scored), reverse=True)
+    leader_gap = boat_scores[0] - boat_scores[1] if len(boat_scores) >= 2 else 0
+    confidence_bonus = clamp_value((leader_gap - 1.5) / 8, 0, 1) * 18
+    for item in tickets:
+        strength = (item["baseScore"] - min_base) / base_spread
+        odds = item["actualOdds"] or 0
+        odds_bonus = clamp_value((odds - 7) * 0.22, 0, 22) if odds else 0
+        item["adminValueScore"] = round(74 + strength * 18 + confidence_bonus + odds_bonus, 1)
     solid = sorted(tickets, key=lambda item: (-item["baseScore"], item["ticket"]))[:5]
     solid_keys = {tuple(item["ticket"]) for item in solid}
     value_candidates = [item for item in tickets if tuple(item["ticket"]) not in solid_keys]
@@ -511,6 +530,7 @@ def build_server_prediction_picks(racers, signals):
                 "probability": round(max(3, min(60, item["baseScore"] / 2)), 1),
                 "estimatedOdds": item["actualOdds"] or None,
                 "actualOdds": item["actualOdds"] or None,
+                "valueScore": item["adminValueScore"],
                 "strategyKey": strategy_key,
                 "strategyLabel": strategy_label,
                 "strategyIndex": index,
@@ -570,7 +590,10 @@ def build_admin_backfill_event(
         for pick in picks
     )
     weather = ((signals.get("beforeinfo") or {}).get("weather") or result_payload.get("weather") or {})
-    bet_decision = normalize_bet_decision({}, picks)
+    bet_decision = normalize_bet_decision({
+        "wind": weather.get("windSpeed"),
+        "wave": weather.get("waveHeight"),
+    }, picks)
     return {
         "key": f"{date}-{venue}-{race}",
         "date": date,
