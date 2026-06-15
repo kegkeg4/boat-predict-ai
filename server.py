@@ -567,7 +567,7 @@ def build_admin_backfill_event(
         }
         for index, racer in enumerate(racers)
     ]
-    result_payload = load_result(date, jcd, race, timeout=result_timeout)
+    result_payload = load_result(date, jcd, race, timeout=result_timeout, include_weather=True)
     if not result_payload.get("available"):
         return None
     signals = load_signals(date, jcd, race, timeout=signal_timeout)
@@ -1912,29 +1912,53 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
     return payload
 
 
-def load_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
-    cached = get_cached_result(date, jcd, race)
-    if cached:
-        return cached
-    pay_payload = get_pay_result(date, jcd, race, timeout=min(timeout, 12))
-    if pay_payload:
-        return pay_payload
+def fetch_raceresult_payload(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
     compact_date = date.replace("-", "")
     path = f"/owpc/pc/race/raceresult?rno={race}&jcd={jcd}&hd={compact_date}"
     result_cache_seconds = CACHE_SECONDS if date < current_jst_date() else 60
     html_text = fetch_html(path, cache_seconds=result_cache_seconds, timeout=timeout)
     result = parse_result(html_text)
-    weather = parse_weather(html_text)
-    payouts = parse_payouts(html_text)
-    payload = {
+    return {
         "date": date,
         "jcd": jcd,
         "race": race,
         "available": result is not None,
         "result": result,
-        "weather": weather,
-        "payouts": payouts,
+        "weather": parse_weather(html_text),
+        "payouts": parse_payouts(html_text),
+        "source": "raceresult",
     }
+
+
+def merge_result_weather(primary, detail):
+    if not isinstance(primary, dict) or not isinstance(detail, dict):
+        return primary
+    weather = detail.get("weather") or {}
+    if not weather.get("available"):
+        return primary
+    merged = dict(primary)
+    merged["weather"] = weather
+    if detail.get("payouts"):
+        merged["payouts"] = detail["payouts"]
+    merged["source"] = f"{primary.get('source') or 'result'}+raceresult-weather"
+    return merged
+
+
+def load_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS, include_weather=False):
+    cached = get_cached_result(date, jcd, race)
+    if cached and (not include_weather or (cached.get("weather") or {}).get("available")):
+        return cached
+    pay_payload = get_pay_result(date, jcd, race, timeout=min(timeout, 12))
+    if pay_payload:
+        if include_weather and not (pay_payload.get("weather") or {}).get("available"):
+            try:
+                detail_payload = fetch_raceresult_payload(date, jcd, race, timeout=timeout)
+                pay_payload = merge_result_weather(pay_payload, detail_payload)
+                store_result_payload(date, jcd, race, pay_payload)
+            except Exception:
+                pass
+        return pay_payload
+    payload = fetch_raceresult_payload(date, jcd, race, timeout=timeout)
     store_result_payload(date, jcd, race, payload)
     return payload
 
