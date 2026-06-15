@@ -2119,8 +2119,13 @@ function getPrimaryPredictionForRace(race) {
     group.picks.map((pick, index) => ({
       ticket: pick.ticket.map((racer) => racer.boat),
       probability: pick.probability,
+      pairProbability: pick.pairProbability,
       estimatedOdds: pick.estimatedOdds,
       actualOdds: pick.actualOdds,
+      oddsSource: pick.actualOdds ? "official" : "estimated",
+      marketProbability: pick.actualOdds && pick.estimatedOdds ? 1 / pick.estimatedOdds : null,
+      valueScore: pick.valueScore,
+      footScore: pick.footScore,
       strategyKey: group.key,
       strategyLabel: group.label,
       strategyIndex: index
@@ -2354,7 +2359,30 @@ function saveLearningLog(rows) {
   const normalizeLearningPicks = (picks) => Array.isArray(picks)
     ? picks.map((pick) => ({
         ...pick,
-        ticket: normalizeLearningTicket(pick.ticket)
+        ticket: normalizeLearningTicket(pick.ticket),
+        marketProbability: Number.isFinite(Number(pick.marketProbability))
+          ? Number(pick.marketProbability)
+          : (pick.oddsSource === "official" && Number(pick.estimatedOdds) > 0 ? 1 / Number(pick.estimatedOdds) : null)
+      }))
+    : [];
+  const normalizeLearningRacers = (racers) => Array.isArray(racers)
+    ? racers.map((racer) => ({
+        boat: racer.boat,
+        registration: racer.registration,
+        name: racer.name,
+        grade: racer.grade,
+        start: racer.start,
+        national: racer.national,
+        local: racer.local,
+        motor: racer.motor,
+        probability: racer.probability,
+        rawScore: racer.rawScore,
+        modelScore: racer.modelScore,
+        officialSignal: racer.officialSignal,
+        exhibition: racer.exhibition,
+        exhibitionImpact: racer.exhibitionImpact,
+        weatherImpact: racer.weatherImpact,
+        venueImpact: racer.venueImpact
       }))
     : [];
   judgedRows.forEach((row) => {
@@ -2370,6 +2398,7 @@ function saveLearningLog(rows) {
       result: row.official.result,
       payout: row.official.payout,
       picks: normalizedPicks,
+      racers: normalizeLearningRacers(row.prediction.data?.racers),
       betDecision: {
         key: decision.key,
         label: decision.label,

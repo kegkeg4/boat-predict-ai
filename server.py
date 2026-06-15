@@ -530,6 +530,8 @@ def build_server_prediction_picks(racers, signals):
                 "probability": round(max(3, min(60, item["baseScore"] / 2)), 1),
                 "estimatedOdds": item["actualOdds"] or None,
                 "actualOdds": item["actualOdds"] or None,
+                "oddsSource": "official" if item["actualOdds"] else "missing",
+                "marketProbability": round(1 / item["actualOdds"], 6) if item["actualOdds"] else None,
                 "valueScore": item["adminValueScore"],
                 "strategyKey": strategy_key,
                 "strategyLabel": strategy_label,
@@ -569,6 +571,11 @@ def build_admin_backfill_event(
     if not result_payload.get("available"):
         return None
     signals = load_signals(date, jcd, race, timeout=signal_timeout)
+    beforeinfo_racers = (signals.get("beforeinfo") or {}).get("racers") or {}
+    for racer in racers:
+        beforeinfo = beforeinfo_racers.get(racer["boat"], {})
+        if beforeinfo.get("exhibition") is not None:
+            racer["exhibition"] = beforeinfo.get("exhibition")
     picks = build_server_prediction_picks(racers, signals)
     if not picks:
         return None
@@ -602,6 +609,7 @@ def build_admin_backfill_event(
         "result": result["result"],
         "payout": result["payout"],
         "picks": picks,
+        "racers": racers,
         "betDecision": bet_decision,
         "predictedLeader": picks[0]["ticket"][0] if picks else None,
         "weather": weather.get("weather"),
