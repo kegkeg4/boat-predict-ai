@@ -1449,6 +1449,36 @@ function formatPayoutTicket(ticketText) {
   `).join("");
 }
 
+function ensurePayoutBoardStyles() {
+  if (document.querySelector("#payoutBoardCriticalStyles")) return;
+  const style = document.createElement("style");
+  style.id = "payoutBoardCriticalStyles";
+  style.textContent = `
+    .payout-board{grid-column:1/-1!important;display:block!important;width:100%!important;overflow:hidden!important;border:1px solid #123d68!important;border-radius:14px!important;background:#254e67!important;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)!important}
+    .payout-board *{box-sizing:border-box!important}
+    .payout-board-header{display:grid!important;grid-template-columns:1fr auto 1fr!important;align-items:center!important;gap:12px!important;padding:11px 14px!important;color:#fff!important;background:linear-gradient(180deg,#287cff,#004ab4 70%,#003374)!important;text-shadow:0 2px 2px rgba(0,0,0,.55)!important;font-weight:900!important}
+    .payout-board-header span:first-child{color:#ffe36b!important;font-size:17px!important;letter-spacing:.08em!important}
+    .payout-board-header b{padding:0 14px!important;font-size:22px!important}
+    .payout-board-header span:last-child{font-size:19px!important;text-align:center!important}
+    .payout-board-body{padding:9px 10px 10px!important;background:linear-gradient(180deg,#315d78,#264f68)!important}
+    .payout-row{display:grid!important;grid-template-columns:118px minmax(120px,1fr) 130px 86px!important;align-items:center!important;min-height:44px!important;color:#fff!important;background:rgba(18,49,68,.42)!important;border-bottom:1px solid rgba(255,255,255,.06)!important;text-shadow:0 2px 2px rgba(0,0,0,.65)!important}
+    .payout-type{align-self:stretch!important;display:grid!important;place-items:center!important;padding:9px!important;background:linear-gradient(180deg,#1d7df7,#0040ba)!important;font-size:18px!important;font-weight:900!important}
+    .payout-row:nth-child(1) .payout-type,.payout-row:nth-child(2) .payout-type{background:linear-gradient(180deg,#7d55c8,#7d18ad)!important}
+    .payout-row:nth-child(n+5) .payout-type{background:linear-gradient(180deg,#329d52,#0b6033)!important}
+    .payout-ticket{display:flex!important;align-items:center!important;justify-content:center!important;gap:7px!important;padding:8px!important;font-size:22px!important;font-weight:900!important}
+    .payout-ticket i{color:#f4f7fb!important;font-style:normal!important}
+    .payout-boat{width:30px!important;height:34px!important;display:grid!important;place-items:center!important;flex:0 0 auto!important;border-radius:4px!important;font-size:22px!important;font-weight:900!important;box-shadow:0 2px 2px rgba(0,0,0,.35)!important}
+    .payout-money{padding-right:12px!important;font-size:23px!important;font-weight:900!important;text-align:right!important;letter-spacing:.03em!important}
+    .payout-popularity{color:#fff!important;font-size:15px!important;font-weight:900!important}
+    .payout-summary{display:grid!important;grid-template-columns:repeat(3,1fr)!important;gap:1px!important;background:rgba(255,255,255,.15)!important}
+    .payout-summary div{padding:10px 12px!important;background:rgba(8,31,47,.62)!important}
+    .payout-summary small{display:block!important;margin-bottom:4px!important;color:#a9d7ff!important;font-size:8px!important;font-weight:900!important;letter-spacing:.12em!important}
+    .payout-summary strong{color:#fff!important;font-size:13px!important}
+    @media(max-width:700px){.payout-board-header{grid-template-columns:1fr auto!important}.payout-board-header span:last-child{grid-column:1/-1!important;font-size:14px!important;text-align:left!important}.payout-row{grid-template-columns:78px minmax(92px,1fr) 92px!important;min-height:38px!important}.payout-popularity{display:none!important}.payout-type{font-size:13px!important}.payout-ticket{gap:4px!important;font-size:16px!important}.payout-boat{width:24px!important;height:28px!important;font-size:16px!important}.payout-money{font-size:16px!important}.payout-summary{grid-template-columns:1fr!important}}
+  `;
+  document.head.append(style);
+}
+
 function buildResultPayoutRows(official) {
   const rows = Array.isArray(official.payouts) ? [...official.payouts] : [];
   if (!rows.some((row) => row.type === "3連単")) {
@@ -1467,6 +1497,7 @@ function buildResultPayoutRows(official) {
 }
 
 function renderPayoutBoard(official, hitPick, predictedFirst) {
+  ensurePayoutBoardStyles();
   const rows = buildResultPayoutRows(official);
   const resultKey = official.result.join("-");
   return `
@@ -1501,6 +1532,7 @@ function renderOfficialResult(data) {
     resultCard.hidden = true;
     return;
   }
+  ensurePayoutBoardStyles();
 
   const official = getVerifiedResult(selectedRace);
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
