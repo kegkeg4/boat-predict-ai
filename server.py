@@ -22,15 +22,19 @@ USER_AGENT = "Mozilla/5.0 BOAT-PREDICT-AI/1.0"
 CACHE_SECONDS = 21600
 PAST_RESULT_CACHE_SECONDS = int(os.environ.get("BOAT_PAST_RESULT_CACHE_SECONDS", str(30 * 24 * 60 * 60)))
 FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_FETCH_TIMEOUT", "8"))
+PROGRAM_INDEX_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PROGRAM_INDEX_TIMEOUT", "14"))
 DETAIL_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_DETAIL_FETCH_TIMEOUT", "3"))
 ADMIN_BACKFILL_WORKERS = int(os.environ.get("BOAT_ADMIN_BACKFILL_WORKERS", "4"))
 ADMIN_BACKFILL_RESULT_TIMEOUT = float(os.environ.get("BOAT_ADMIN_RESULT_TIMEOUT", "16"))
 ADMIN_BACKFILL_SIGNAL_TIMEOUT = float(os.environ.get("BOAT_ADMIN_SIGNAL_TIMEOUT", "2"))
 BACKGROUND_SYNC_INTERVAL_SECONDS = int(os.environ.get("BOAT_BACKGROUND_SYNC_INTERVAL", "1800"))
+SIGNALS_CACHE_SECONDS = int(os.environ.get("BOAT_SIGNALS_CACHE_SECONDS", "180"))
+PROGRAM_UNAVAILABLE_CACHE_SECONDS = int(os.environ.get("BOAT_PROGRAM_UNAVAILABLE_CACHE_SECONDS", "5"))
 CACHE_DIR = Path(os.environ.get("BOAT_DATA_DIR", Path(__file__).with_name(".official-cache")))
 PROGRAM_CACHE_FILE = CACHE_DIR / "programs.json"
 SCHEDULE_CACHE_FILE = CACHE_DIR / "schedules.json"
 RESULTS_CACHE_FILE = CACHE_DIR / "results.json"
+SIGNALS_CACHE_FILE = CACHE_DIR / "signals.json"
 LEARNING_FILE = CACHE_DIR / "learning.json"
 SCHEDULE_CACHE_VERSION = 2
 JST = timezone(timedelta(hours=9))
@@ -49,6 +53,8 @@ venue_status_cache_lock = threading.Lock()
 venue_status_cache = {}
 results_cache_lock = threading.Lock()
 results_cache = {}
+signals_cache_lock = threading.Lock()
+signals_cache = {}
 prefetch_lock = threading.Lock()
 prefetching_programs = set()
 warmup_lock = threading.Lock()
@@ -703,6 +709,61 @@ def store_result_payload(date, jcd, race, payload):
 results_cache.update(read_results_cache())
 
 
+def read_signals_cache():
+    try:
+        return json.loads(SIGNALS_CACHE_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_signals_cache():
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = SIGNALS_CACHE_FILE.with_suffix(".tmp")
+    with signals_cache_lock:
+        snapshot = dict(signals_cache)
+    temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    try:
+        temporary.replace(SIGNALS_CACHE_FILE)
+    except OSError:
+        pass
+
+
+def get_signals_cache_seconds(date, payload=None):
+    if payload and not payload.get("available"):
+        return 45
+    today = current_jst_date()
+    if date < today:
+        return PAST_RESULT_CACHE_SECONDS
+    if date > today:
+        return CACHE_SECONDS
+    return SIGNALS_CACHE_SECONDS
+
+
+def get_cached_signals(date, jcd, race):
+    cache_key = f"{date}-{jcd}-{race}"
+    with signals_cache_lock:
+        cached = signals_cache.get(cache_key)
+    if not cached:
+        return None
+    payload = cached.get("payload")
+    if time.time() - cached.get("savedAt", 0) > get_signals_cache_seconds(date, payload):
+        return None
+    return payload
+
+
+def store_signals_payload(date, jcd, race, payload):
+    cache_key = f"{date}-{jcd}-{race}"
+    with signals_cache_lock:
+        signals_cache[cache_key] = {
+            "savedAt": time.time(),
+            "payload": payload,
+        }
+    save_signals_cache()
+
+
+signals_cache.update(read_signals_cache())
+
+
 def schedule_program_prefetch(date, jcd):
     thread = threading.Thread(
         target=warm_program_races,
@@ -854,6 +915,22 @@ def is_server_race_completed(date, cutoff):
     return now >= cutoff_dt + timedelta(minutes=3)
 
 
+def should_warm_signals(date, cutoff):
+    if date != current_jst_date() or not cutoff:
+        return False
+    match = re.search(r"(\d{1,2}):(\d{2})", str(cutoff))
+    if not match:
+        return False
+    now = datetime.now(JST)
+    cutoff_dt = now.replace(
+        hour=int(match.group(1)),
+        minute=int(match.group(2)),
+        second=0,
+        microsecond=0,
+    )
+    return now - timedelta(minutes=20) <= cutoff_dt <= now + timedelta(minutes=90)
+
+
 def warm_completed_results_once(date=None):
     target_date = date or current_jst_date()
     try:
@@ -916,9 +993,17 @@ def background_data_sync_once():
         ]
         for jcd in sorted(active_jcds):
             try:
-                load_program(target_date, jcd, 1, should_prefetch=False)
+                program = load_program(target_date, jcd, 1, should_prefetch=False)
             except Exception:
-                pass
+                program = {"races": []}
+            for race in program.get("races", []):
+                if not should_warm_signals(target_date, race.get("cutoff")):
+                    continue
+                try:
+                    load_signals(target_date, jcd, race.get("race"), timeout=DETAIL_FETCH_TIMEOUT_SECONDS)
+                except Exception:
+                    pass
+                time.sleep(0.15)
             time.sleep(0.2)
 
 
@@ -964,7 +1049,7 @@ def fetch_html(path, cache_seconds=CACHE_SECONDS, timeout=FETCH_TIMEOUT_SECONDS)
             with urlopen(request, timeout=timeout) as response:
                 text = response.read().decode("utf-8", errors="replace")
         except Exception:
-            if stale_text:
+            if stale_text and cache_seconds > 0:
                 cache[path] = (time.time(), stale_text)
                 return stale_text
             raise
@@ -1502,6 +1587,9 @@ def parse_odds3t(html_text):
 
 
 def load_signals(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
+    cached = get_cached_signals(date, jcd, race)
+    if cached:
+        return cached
     compact_date = date.replace("-", "")
     paths = {
         "expect": (f"/owpc/pc/race/pcexpect?rno={race}&jcd={jcd}&hd={compact_date}", 600),
@@ -1519,7 +1607,7 @@ def load_signals(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
                 html[name] = future.result()
             except Exception:
                 html[name] = ""
-    return {
+    payload = {
         "date": date,
         "jcd": jcd,
         "race": race,
@@ -1527,6 +1615,12 @@ def load_signals(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
         "beforeinfo": parse_beforeinfo(html["beforeinfo"]) if html["beforeinfo"] else {"available": False, "racers": {}},
         "odds": parse_odds3t(html["odds"]) if html["odds"] else {"available": False, "odds": {}, "firstPopularity": []},
     }
+    payload["available"] = any(
+        payload.get(key, {}).get("available")
+        for key in ("expect", "beforeinfo", "odds")
+    )
+    store_signals_payload(date, jcd, race, payload)
+    return payload
 
 
 def load_program(date, jcd, selected_race, should_prefetch=True):
@@ -1540,7 +1634,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
             stale_payload = stored.get("payload")
         if stored and stored_age < CACHE_SECONDS:
             if not stored["payload"].get("available"):
-                if stored_age < 60:
+                if stored_age < PROGRAM_UNAVAILABLE_CACHE_SECONDS:
                     return stored["payload"]
             else:
                 recent_payload = stored["payload"]
@@ -1577,7 +1671,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
             detail_html = ""
     else:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            index_future = executor.submit(fetch_html, index_path)
+            index_future = executor.submit(fetch_html, index_path, CACHE_SECONDS, PROGRAM_INDEX_TIMEOUT_SECONDS)
             detail_future = executor.submit(fetch_html, detail_path, CACHE_SECONDS, DETAIL_FETCH_TIMEOUT_SECONDS)
             try:
                 index_html = index_future.result()
@@ -1592,19 +1686,20 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
         races = parse_race_index(index_html)
     if not races:
         try:
-            races = parse_race_index(fetch_html(index_path, cache_seconds=0, timeout=FETCH_TIMEOUT_SECONDS))
+            races = parse_race_index(fetch_html(index_path, cache_seconds=0, timeout=PROGRAM_INDEX_TIMEOUT_SECONDS))
         except Exception:
             races = []
     if not races:
         if stale_payload and stale_payload.get("available"):
             return stale_payload
         payload = {"date": date, "jcd": jcd, "available": False, "races": []}
-        with program_cache_lock:
-            program_cache[program_key] = {
-                "savedAt": time.time(),
-                "payload": payload,
-            }
-            save_program_cache()
+        if date > current_jst_date():
+            with program_cache_lock:
+                program_cache[program_key] = {
+                    "savedAt": time.time(),
+                    "payload": payload,
+                }
+                save_program_cache()
         return payload
 
     selected = next(

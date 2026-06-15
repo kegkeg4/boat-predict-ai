@@ -20,8 +20,14 @@ services:
         value: "1"
       - key: BOAT_BACKGROUND_SYNC_INTERVAL
         value: "900"
+      - key: BOAT_SIGNALS_CACHE_SECONDS
+        value: "180"
+      - key: BOAT_PROGRAM_UNAVAILABLE_CACHE_SECONDS
+        value: "5"
       - key: BOAT_FETCH_TIMEOUT
         value: "8"
+      - key: BOAT_PROGRAM_INDEX_TIMEOUT
+        value: "14"
       - key: BOAT_DETAIL_FETCH_TIMEOUT
         value: "3"
       - key: BOAT_PAST_RESULT_CACHE_SECONDS
