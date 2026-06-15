@@ -64,6 +64,7 @@ function renderCoverage(payload) {
 function renderPerformance(payload) {
   const totals = payload.totals || {};
   const rows = payload.rows || [];
+  const betModes = totals.betModes || {};
   renderCoverage(payload);
   document.querySelector("#adminTableTitle").textContent = `${formatDateLabel(payload.date)} 日別・会場別収支`;
   document.querySelector("#adminRaceCount").textContent = totals.races || 0;
@@ -78,6 +79,25 @@ function renderPerformance(payload) {
     element.textContent = formatYen(value);
     setMoneyClass(element, value);
   });
+  const modeOrder = ["recommended", "kenjitsu", "shobu", "ana", "miokuri"];
+  const modeGrid = document.querySelector("#adminBetModeGrid");
+  if (modeGrid) {
+    modeGrid.innerHTML = modeOrder.map((key) => {
+      const mode = betModes[key] || {};
+      const net = mode.net || 0;
+      const stake = mode.stake || 0;
+      const returned = mode.return || 0;
+      const races = mode.races || 0;
+      const hits = mode.hits || 0;
+      return `
+        <article class="${net >= 0 ? "plus" : "minus"}">
+          <small>${mode.label || key}</small>
+          <strong>${formatYen(net)}</strong>
+          <span>${races}R / 的中 ${hits} / 投資 ${formatYen(stake)} / 回収 ${formatYen(returned)}</span>
+        </article>
+      `;
+    }).join("");
+  }
 
   if (!rows.length) {
     tableBody.innerHTML = `<tr><td colspan="5" class="admin-empty">この日の保存済み予測成績はまだありません。</td></tr>`;

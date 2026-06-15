@@ -2361,6 +2361,7 @@ function saveLearningLog(rows) {
     const key = `${dateInput.value}-${venue}-${row.race}`;
     const normalizedPicks = normalizeLearningPicks(row.prediction.picks);
     const predictedLeader = normalizedPicks[0]?.ticket?.[0] || row.prediction.data?.ranking?.[0]?.boat || null;
+    const decision = row.betDecision || row.prediction.betDecision || BET_MODE_CONFIG.miokuri;
     const event = {
       key,
       date: dateInput.value,
@@ -2369,6 +2370,12 @@ function saveLearningLog(rows) {
       result: row.official.result,
       payout: row.official.payout,
       picks: normalizedPicks,
+      betDecision: {
+        key: decision.key,
+        label: decision.label,
+        buy: Boolean(decision.buy),
+        strategyKeys: Array.isArray(decision.strategyKeys) ? decision.strategyKeys : []
+      },
       predictedLeader,
       weather: row.prediction.data?.weather?.label,
       wind: row.prediction.data?.wind,

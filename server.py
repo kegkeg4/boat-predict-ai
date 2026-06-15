@@ -216,6 +216,57 @@ def normalize_ticket(ticket):
     return "-".join(parts)
 
 
+def pick_value_score(pick):
+    try:
+        value = pick.get("valueScore")
+        if value is not None:
+            return float(value)
+        probability = float(pick.get("probability") or 0)
+        odds = float(pick.get("estimatedOdds") or pick.get("actualOdds") or 0)
+        return probability * odds
+    except (TypeError, ValueError):
+        return 0
+
+
+def normalize_bet_decision(event, picks):
+    labels = {
+        "kenjitsu": "堅実/絞り",
+        "shobu": "勝負",
+        "ana": "穴狙い",
+        "miokuri": "見送り",
+    }
+    decision = event.get("betDecision") if isinstance(event.get("betDecision"), dict) else {}
+    key = decision.get("key")
+    if key in labels:
+        return {
+            "key": key,
+            "label": decision.get("label") or labels[key],
+            "buy": bool(decision.get("buy")),
+            "strategyKeys": decision.get("strategyKeys") if isinstance(decision.get("strategyKeys"), list) else [],
+        }
+    if not picks:
+        return {"key": "miokuri", "label": labels["miokuri"], "buy": False, "strategyKeys": []}
+    best = max(picks, key=pick_value_score)
+    best_score = pick_value_score(best)
+    positive_count = sum(
+        1
+        for pick in picks
+        if pick_value_score(pick) >= 100 and float(pick.get("estimatedOdds") or 0) >= 7
+    )
+    top_ana = next((pick for pick in picks if pick.get("strategyKey") == "ana"), None)
+    top_ana_score = pick_value_score(top_ana) if top_ana else 0
+    top_ana_odds = float((top_ana or {}).get("estimatedOdds") or 0)
+    if best_score < 72:
+        return {"key": "miokuri", "label": labels["miokuri"], "buy": False, "strategyKeys": []}
+    if top_ana and top_ana_odds >= 25 and top_ana_score >= 88:
+        return {"key": "ana", "label": labels["ana"], "buy": True, "strategyKeys": ["ana"]}
+    if best_score >= 115 and positive_count >= 1:
+        return {"key": "shobu", "label": labels["shobu"], "buy": True, "strategyKeys": ["honmei", "nerai"]}
+    if best_score >= 96:
+        return {"key": "kenjitsu", "label": labels["kenjitsu"], "buy": True, "strategyKeys": ["honmei"]}
+    return {"key": "miokuri", "label": labels["miokuri"], "buy": False, "strategyKeys": []}
+
+
 def get_admin_performance(date):
     store = read_learning_store()
     events = [
@@ -239,6 +290,13 @@ def get_admin_performance(date):
         "honmei": {"stake": 0, "return": 0, "net": 0, "hits": 0},
         "nerai": {"stake": 0, "return": 0, "net": 0, "hits": 0},
         "ana": {"stake": 0, "return": 0, "net": 0, "hits": 0},
+        "betModes": {
+            "recommended": {"label": "推奨だけ", "stake": 0, "return": 0, "net": 0, "hits": 0, "races": 0},
+            "kenjitsu": {"label": "堅実/絞り", "stake": 0, "return": 0, "net": 0, "hits": 0, "races": 0},
+            "shobu": {"label": "勝負", "stake": 0, "return": 0, "net": 0, "hits": 0, "races": 0},
+            "ana": {"label": "穴狙い", "stake": 0, "return": 0, "net": 0, "hits": 0, "races": 0},
+            "miokuri": {"label": "見送り", "stake": 0, "return": 0, "net": 0, "hits": 0, "races": 0},
+        },
         "net": 0,
         "races": 0,
     }
@@ -252,6 +310,7 @@ def get_admin_performance(date):
                 "honmei": {"stake": 0, "return": 0, "net": 0, "hits": 0},
                 "nerai": {"stake": 0, "return": 0, "net": 0, "hits": 0},
                 "ana": {"stake": 0, "return": 0, "net": 0, "hits": 0},
+                "recommended": {"stake": 0, "return": 0, "net": 0, "hits": 0, "races": 0},
                 "net": 0,
             },
         )
@@ -279,6 +338,33 @@ def get_admin_performance(date):
             totals[strategy_key]["hits"] += 1 if hit else 0
             row["net"] += net
             totals["net"] += net
+        decision = normalize_bet_decision(event, picks)
+        selected_keys = set(decision.get("strategyKeys") or [])
+        recommended_picks = [
+            pick for pick in picks
+            if isinstance(pick, dict) and pick.get("strategyKey") in selected_keys
+        ]
+        recommended_stake = len(recommended_picks) * 100
+        recommended_hit = any(normalize_ticket(pick.get("ticket")) == result_key for pick in recommended_picks)
+        recommended_return = payout if recommended_hit else 0
+        recommended_net = recommended_return - recommended_stake
+        if decision.get("buy") and recommended_stake > 0:
+            for mode_key in ("recommended", decision.get("key")):
+                mode = totals["betModes"].get(mode_key)
+                if not mode:
+                    continue
+                mode["races"] += 1
+                mode["stake"] += recommended_stake
+                mode["return"] += recommended_return
+                mode["net"] += recommended_net
+                mode["hits"] += 1 if recommended_hit else 0
+            row["recommended"]["races"] += 1
+            row["recommended"]["stake"] += recommended_stake
+            row["recommended"]["return"] += recommended_return
+            row["recommended"]["net"] += recommended_net
+            row["recommended"]["hits"] += 1 if recommended_hit else 0
+        else:
+            totals["betModes"]["miokuri"]["races"] += 1
     expected_rows = []
     saved_by_venue = {
         venue: set(
@@ -481,6 +567,7 @@ def build_admin_backfill_event(
         for pick in picks
     )
     weather = ((signals.get("beforeinfo") or {}).get("weather") or result_payload.get("weather") or {})
+    bet_decision = normalize_bet_decision({}, picks)
     return {
         "key": f"{date}-{venue}-{race}",
         "date": date,
@@ -489,6 +576,7 @@ def build_admin_backfill_event(
         "result": result["result"],
         "payout": result["payout"],
         "picks": picks,
+        "betDecision": bet_decision,
         "predictedLeader": picks[0]["ticket"][0] if picks else None,
         "weather": weather.get("weather"),
         "wind": weather.get("windSpeed"),
