@@ -122,6 +122,12 @@ const BET_MODE_CONFIG = {
   ana: { label: "穴狙い", strategyKeys: ["ana"] },
   miokuri: { label: "見送り", strategyKeys: [] }
 };
+const GRADE_FALLBACK_STATS = {
+  A1: { national: 6.2, local: 5.9, motor: 32, start: 0.16 },
+  A2: { national: 5.4, local: 5.1, motor: 31, start: 0.17 },
+  B1: { national: 4.3, local: 4.1, motor: 30, start: 0.18 },
+  B2: { national: 3.5, local: 3.3, motor: 29, start: 0.20 }
+};
 const officialMarks = ["◎", "○", "△", "×"];
 const raceCutoffTimes = ["10:35", "11:04", "11:33", "12:02", "12:31", "13:00", "13:29", "13:58", "14:27", "14:56", "15:25", "15:54"];
 const officialRacerProfiles = {
@@ -500,7 +506,12 @@ function getOfficialProgramRace(race = selectedRace) {
   const key = getProgramKey();
   const dynamicRace = dynamicPrograms[key]?.races
     .find((item) => item.race === race);
-  if (dynamicRace) return dynamicRace;
+  if (dynamicRace) {
+    return {
+      ...dynamicRace,
+      racers: normalizeOfficialRacers(dynamicRace.racers || [])
+    };
+  }
   const program = officialPrograms[key];
   if (!program) return null;
   const registrations = program.lineups[race - 1];
@@ -512,6 +523,31 @@ function getOfficialProgramRace(race = selectedRace) {
       return { boat: index + 1, registration, name, grade, national, local, motor, start };
     })
   };
+}
+
+function normalizeOfficialRacers(racers) {
+  return racers.map((racer, index) => {
+    const registration = Number(racer.registration);
+    const profile = officialRacerProfiles[registration] || [];
+    const grade = racer.grade || profile[1] || "B1";
+    const fallback = GRADE_FALLBACK_STATS[grade] || GRADE_FALLBACK_STATS.B1;
+    const national = Number.isFinite(racer.national) ? racer.national : Number.isFinite(profile[2]) ? profile[2] : fallback.national;
+    const local = Number.isFinite(racer.local) ? racer.local : Number.isFinite(profile[3]) ? profile[3] : fallback.local;
+    const motor = Number.isFinite(racer.motor) ? racer.motor : Number.isFinite(profile[4]) ? profile[4] : fallback.motor;
+    const start = Number.isFinite(racer.start) ? racer.start : Number.isFinite(profile[5]) ? profile[5] : fallback.start;
+    return {
+      ...racer,
+      boat: Number.isInteger(racer.boat) ? racer.boat : index + 1,
+      registration,
+      name: racer.name || profile[0] || `登録${registration || index + 1}`,
+      grade,
+      national,
+      local,
+      motor,
+      start,
+      statsFallback: !Number.isFinite(racer.national) || !Number.isFinite(racer.local) || !Number.isFinite(racer.motor)
+    };
+  });
 }
 
 async function loadOfficialProgram(signal) {
@@ -961,7 +997,10 @@ function applyOfficialResultPayload(race, payload) {
   const key = `${getProgramKey()}-${race}`;
   mergeResultWeather(race, payload.weather);
   if (payload.available && isValidOfficialResult(payload.result)) {
-    dynamicResults[key] = payload.result;
+    dynamicResults[key] = {
+      ...payload.result,
+      payouts: Array.isArray(payload.payouts) ? payload.payouts : []
+    };
     delete resultUnavailableCache[key];
     invalidatePerformanceCache();
     renderManshuBanner();
@@ -971,10 +1010,12 @@ function applyOfficialResultPayload(race, payload) {
   return null;
 }
 
-async function loadOfficialResultsForDay(signal) {
+async function loadOfficialResultsForDay(signal, races = []) {
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
+  const raceList = [...new Set(races.map(Number).filter((race) => race >= 1 && race <= 12))];
+  const raceQuery = raceList.length ? `&races=${encodeURIComponent(raceList.join(","))}` : "";
   const response = await fetchWithTimeout(
-    `/api/results?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}`,
+    `/api/results?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}${raceQuery}`,
     { signal, timeoutMs: RESULT_BATCH_TIMEOUT_MS }
   );
   if (!response.ok) throw new Error(`公式結果一括取得エラー: ${response.status}`);
@@ -991,11 +1032,7 @@ async function loadOfficialResultsForDay(signal) {
 function buildRaceData(race = selectedRace) {
   const venue = venues[Number(venueSelect.value)];
   const officialRace = getOfficialProgramRace(race);
-  if (!officialRace || !officialRace.racers.every((racer) =>
-    Number.isFinite(racer.national)
-    && Number.isFinite(racer.local)
-    && Number.isFinite(racer.motor)
-  )) return null;
+  if (!officialRace || !officialRace.racers?.length) return null;
   const signals = getRaceSignals(race);
   const officialScoresByBoat = signals?.expect?.scores || {};
   const officialOrderFromFocus = signals?.expect?.order || [];
@@ -1175,8 +1212,8 @@ function getProgramReadinessMessage() {
   );
   if (!hasDetailedStats) {
     return {
-      title: "公式出走表の詳細成績を取得中です",
-      body: "出走選手一覧は取得済みです。全国勝率・当地勝率・モーター成績の詳細を取得でき次第、予測を表示します。"
+      title: "公式出走表は取得済みです",
+      body: "出走選手一覧を取得済みです。詳細成績が一部未取得のため、級別ベースの暫定補正を使って予測を表示します。"
     };
   }
   return {
@@ -1310,9 +1347,9 @@ function renderRace(data) {
       <td>${boatBadge(racer.boat, true)}</td>
       <td><b>${racer.name}</b></td>
       <td><span class="grade ${racer.grade}">${racer.grade}</span></td>
-      <td>${racer.national.toFixed(2)}</td>
-      <td>${racer.local.toFixed(2)}</td>
-      <td>${racer.motor.toFixed(1)}%</td>
+      <td>${racer.national.toFixed(2)}${racer.statsFallback ? '<small class="fallback-stat">暫定</small>' : ""}</td>
+      <td>${racer.local.toFixed(2)}${racer.statsFallback ? '<small class="fallback-stat">暫定</small>' : ""}</td>
+      <td>${racer.motor.toFixed(1)}%${racer.statsFallback ? '<small class="fallback-stat">暫定</small>' : ""}</td>
       <td>${racer.exhibitionAvailable ? racer.exhibition.toFixed(2) : '<span class="exhibition-pending">未公開</span>'}</td>
       <td><span class="exhibition-impact ${racer.exhibitionImpact > 1 ? "up" : racer.exhibitionImpact < -1 ? "down" : "flat"}">${racer.exhibitionAvailable ? `${racer.exhibitionImpact >= 0 ? "+" : ""}${racer.exhibitionImpact.toFixed(1)}` : "対象外"}</span></td>
       <td><span class="exhibition-impact ${racer.weatherImpact > .8 ? "up" : racer.weatherImpact < -.8 ? "down" : "flat"}">${racer.weatherImpact >= 0 ? "+" : ""}${racer.weatherImpact.toFixed(1)}</span></td>
@@ -1401,6 +1438,63 @@ function renderOfficialSignal(data) {
   return agreement;
 }
 
+function formatPayoutTicket(ticketText) {
+  const normalized = String(ticketText || "").replace(/[－ー]/g, "-");
+  const parts = normalized.split(/[-=]/).filter(Boolean);
+  const separator = normalized.includes("=") ? "=" : normalized.includes("-") ? "-" : "";
+  if (!parts.length) return normalized || "―";
+  return parts.map((part, index) => `
+    ${index ? `<i>${separator}</i>` : ""}
+    ${/^[1-6]$/.test(part) ? boatBadge(Number(part)) : `<b>${part}</b>`}
+  `).join("");
+}
+
+function buildResultPayoutRows(official) {
+  const rows = Array.isArray(official.payouts) ? [...official.payouts] : [];
+  if (!rows.some((row) => row.type === "3連単")) {
+    rows.push({
+      type: "3連単",
+      ticket: official.result.join("-"),
+      payout: official.payout,
+      popularity: null,
+    });
+  }
+  const order = ["2連単", "2連複", "3連単", "3連複", "拡連複", "単勝", "複勝"];
+  return rows.sort((a, b) => {
+    const typeDiff = order.indexOf(a.type) - order.indexOf(b.type);
+    return typeDiff || String(a.ticket).localeCompare(String(b.ticket), "ja");
+  });
+}
+
+function renderPayoutBoard(official, hitPick, predictedFirst) {
+  const rows = buildResultPayoutRows(official);
+  const resultKey = official.result.join("-");
+  return `
+    <div class="payout-board">
+      <div class="payout-board-header">
+        <span>${String(Number(venueSelect.value) + 1).padStart(2, "0")}# ${venues[Number(venueSelect.value)].name}</span>
+        <b>${selectedRace}R</b>
+        <span>払戻金</span>
+      </div>
+      <div class="payout-board-body">
+        ${rows.map((row) => `
+          <div class="payout-row type-${row.type.replace(/[連複単勝式]/g, "")}">
+            <div class="payout-type">${row.type}</div>
+            <div class="payout-ticket">${formatPayoutTicket(row.ticket)}</div>
+            <div class="payout-money">${Number(row.payout || 0).toLocaleString("ja-JP")}円</div>
+            <div class="payout-popularity">${row.popularity ? `${row.popularity}番人気` : ""}</div>
+          </div>
+        `).join("")}
+      </div>
+      <div class="payout-summary">
+        <div><small>確定3連単</small><strong>${resultKey}</strong></div>
+        <div><small>予測判定</small><strong>${hitPick ? `${hitPick.strategyLabel}${hitPick.strategyIndex + 1}点目で的中` : "7点は不的中"}</strong></div>
+        <div><small>1着評価</small><strong>${official.result[0] === predictedFirst.boat ? "1着艇を的中" : `${official.result[0]}号艇が勝利`}</strong></div>
+      </div>
+    </div>
+  `;
+}
+
 function renderOfficialResult(data) {
   const resultCard = document.querySelector("#resultCard");
   if (!isRaceCompleted(selectedRace)) {
@@ -1415,10 +1509,16 @@ function renderOfficialResult(data) {
     const badge = document.querySelector("#resultHitBadge");
     badge.className = `result-hit-badge ${selectedResultRefreshInFlight ? "" : "miss"}`;
     badge.textContent = selectedResultRefreshInFlight ? "結果取得中" : "公式結果未取得";
-    document.querySelector("#officialResult").innerHTML = "―";
-    document.querySelector("#resultPayout").textContent = "―";
-    document.querySelector("#resultPredictionRank").textContent = selectedResultRefreshInFlight ? "取得中" : "未判定";
-    document.querySelector("#resultEvaluation").textContent = selectedResultRefreshInFlight ? "公式結果を確認中" : "終了済み";
+    document.querySelector(".result-grid").innerHTML = `
+      <div class="payout-board payout-board-empty">
+        <div class="payout-board-header">
+          <span>${String(Number(venueSelect.value) + 1).padStart(2, "0")}# ${venues[Number(venueSelect.value)].name}</span>
+          <b>${selectedRace}R</b>
+          <span>払戻金</span>
+        </div>
+        <div class="payout-empty-message">${selectedResultRefreshInFlight ? "公式結果を取得中です" : "公式結果未取得"}</div>
+      </div>
+    `;
     document.querySelector("#resultComment").innerHTML =
       (selectedResultRefreshInFlight
         ? `このレースの公式結果を優先して取得しています。`
@@ -1440,14 +1540,9 @@ function renderOfficialResult(data) {
   const badge = document.querySelector("#resultHitBadge");
   badge.className = `result-hit-badge ${hitIndex >= 0 ? "hit" : "miss"}`;
   badge.textContent = hitPick ? `${hitPick.strategyLabel}${hitPick.strategyIndex + 1}点目で的中` : "7点は不的中";
-  document.querySelector("#officialResult").innerHTML = official.result
-    .map((boat, index) => `${index ? "<i>›</i>" : ""}${boatBadge(boat)}`)
-    .join("");
-  document.querySelector("#resultPayout").textContent = `${official.payout.toLocaleString("ja-JP")}円`;
-  document.querySelector("#resultPredictionRank").textContent = hitPick ? `${hitPick.strategyLabel} ${hitPick.strategyIndex + 1}点目` : "圏外";
   const predictedFirst = data.ranking[0];
   const winner = official.result[0];
-  document.querySelector("#resultEvaluation").textContent = winner === predictedFirst.boat ? "1着艇を的中" : `${winner}号艇が勝利`;
+  document.querySelector(".result-grid").innerHTML = renderPayoutBoard(official, hitPick, predictedFirst);
   document.querySelector("#resultComment").textContent = winner === predictedFirst.boat
     ? `AI本命の${predictedFirst.boat}号艇が1着。予測時点の評価と実際の結果が一致しました。`
     : `AI本命は${predictedFirst.boat}号艇でしたが、確定結果は${resultKey}。終了後も予測を上書きせず、外れ方を検証データとして残します。`;
@@ -2207,9 +2302,9 @@ async function refreshDailyPerformanceResults(requestId) {
     renderDailyPerformance({ renderList: false });
 
     const completedRaces = allRaces
-      .filter((race) => isRaceCompleted(race) && getOfficialProgramRace(race)?.detailed && !getVerifiedResult(race));
+      .filter((race) => isRaceCompleted(race) && !getVerifiedResult(race));
     if (completedRaces.length) {
-      await loadOfficialResultsForDay(activeProgramController.signal).catch((error) => {
+      await loadOfficialResultsForDay(activeProgramController.signal, completedRaces).catch((error) => {
         if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
         return null;
       });
@@ -2219,7 +2314,7 @@ async function refreshDailyPerformanceResults(requestId) {
     }
 
     const remainingResultRaces = allRaces
-      .filter((race) => isRaceCompleted(race) && getOfficialProgramRace(race)?.detailed && !getVerifiedResult(race));
+      .filter((race) => isRaceCompleted(race) && !getVerifiedResult(race));
     if (remainingResultRaces.length) {
       await runWithConcurrency(
         remainingResultRaces,
@@ -2313,7 +2408,7 @@ async function runAdminBatchSave() {
     const venueLabel = `${venueIndex + 1}/${activeVenueIndexes.length} ${item.venue.name}`;
     setBatchMessage(`${venueLabel} の出走表・結果・展示情報を取得しています...`);
     try {
-      await loadOfficialResultsForDay(activeProgramController.signal).catch((error) => {
+      await loadOfficialResultsForDay(activeProgramController.signal, allRaces).catch((error) => {
         if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
         return null;
       });

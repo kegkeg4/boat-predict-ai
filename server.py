@@ -25,6 +25,7 @@ ADMIN_BACKFILL_WORKERS = int(os.environ.get("BOAT_ADMIN_BACKFILL_WORKERS", "4"))
 CACHE_DIR = Path(os.environ.get("BOAT_DATA_DIR", Path(__file__).with_name(".official-cache")))
 PROGRAM_CACHE_FILE = CACHE_DIR / "programs.json"
 SCHEDULE_CACHE_FILE = CACHE_DIR / "schedules.json"
+RESULTS_CACHE_FILE = CACHE_DIR / "results.json"
 LEARNING_FILE = CACHE_DIR / "learning.json"
 JST = timezone(timedelta(hours=9))
 BOATRACE_JCDS = [f"{number:02d}" for number in range(1, 25)]
@@ -615,6 +616,65 @@ def save_schedule_cache():
 venue_status_cache.update(read_schedule_cache())
 
 
+def read_results_cache():
+    try:
+        return json.loads(RESULTS_CACHE_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_results_cache():
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = RESULTS_CACHE_FILE.with_suffix(".tmp")
+    with results_cache_lock:
+        snapshot = dict(results_cache)
+        temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(RESULTS_CACHE_FILE)
+
+
+def get_result_cache_seconds(date, payload=None):
+    if date < current_jst_date():
+        return CACHE_SECONDS
+    if payload and payload.get("available"):
+        return CACHE_SECONDS
+    return 45
+
+
+def get_cached_result(date, jcd, race):
+    cache_key = f"{date}-{jcd}"
+    with results_cache_lock:
+        cached = results_cache.get(cache_key)
+    if not cached:
+        return None
+    payload = (cached.get("payload") or {}).get("results", {}).get(str(race))
+    if not payload:
+        return None
+    age = time.time() - cached.get("savedAt", 0)
+    if age < get_result_cache_seconds(date, payload):
+        return payload
+    return None
+
+
+def store_result_payload(date, jcd, race, payload):
+    cache_key = f"{date}-{jcd}"
+    with results_cache_lock:
+        cached = results_cache.get(cache_key, {}).get("payload", {})
+        merged_results = dict(cached.get("results", {}))
+        merged_results[str(race)] = payload
+        results_cache[cache_key] = {
+            "savedAt": time.time(),
+            "payload": {
+                "date": date,
+                "jcd": jcd,
+                "results": merged_results,
+            },
+        }
+    save_results_cache()
+
+
+results_cache.update(read_results_cache())
+
+
 def schedule_program_prefetch(date, jcd):
     thread = threading.Thread(
         target=warm_program_races,
@@ -743,6 +803,68 @@ def startup_warmup_today():
         completedRaces=count_cached_detailed_races(date),
         finishedAt=datetime.now(JST).isoformat(timespec="seconds"),
     )
+
+
+def is_server_race_completed(date, cutoff):
+    if not cutoff:
+        return date < current_jst_date()
+    today = current_jst_date()
+    if date < today:
+        return True
+    if date > today:
+        return False
+    match = re.search(r"(\d{1,2}):(\d{2})", str(cutoff))
+    if not match:
+        return False
+    now = datetime.now(JST)
+    cutoff_dt = now.replace(
+        hour=int(match.group(1)),
+        minute=int(match.group(2)),
+        second=0,
+        microsecond=0,
+    )
+    return now >= cutoff_dt + timedelta(minutes=3)
+
+
+def warm_completed_results_once(date=None):
+    target_date = date or current_jst_date()
+    try:
+        venues_payload = load_venues_status(target_date)
+    except Exception:
+        return
+    active_jcds = [
+        jcd for jcd, status in (venues_payload.get("venues") or {}).items()
+        if status.get("available")
+    ]
+    active_jcds.sort()
+    for jcd in active_jcds:
+        try:
+            program = load_program(target_date, jcd, 1, should_prefetch=False)
+            completed_races = [
+                race["race"]
+                for race in program.get("races", [])
+                if is_server_race_completed(target_date, race.get("cutoff"))
+            ]
+            missing_races = [
+                race for race in completed_races
+                if not get_cached_result(target_date, jcd, race)
+            ]
+            if missing_races:
+                load_results(target_date, jcd, missing_races)
+        except Exception:
+            pass
+        time.sleep(0.6)
+
+
+def result_warmer_worker():
+    while True:
+        warm_completed_results_once()
+        time.sleep(180)
+
+
+def schedule_result_warmer():
+    thread = threading.Thread(target=result_warmer_worker, daemon=True)
+    thread.start()
 
 
 def get_fetch_lock(path):
@@ -981,6 +1103,51 @@ def parse_result(html_text):
     if len(result) != 3 or len(set(result)) != 3 or payout is None:
         return None
     return {"result": result, "payout": payout}
+
+
+def parse_payouts(html_text):
+    parser = TableParser()
+    parser.feed(html_text)
+    payout_types = {"単勝", "複勝", "2連単", "2連複", "3連単", "3連複", "拡連複"}
+    payouts = []
+    current_type = ""
+    for row in parser.rows:
+        cells = row["cells"]
+        if len(cells) < 3:
+            continue
+        first = cells[0]["text"].replace("　", "").strip()
+        offset = 0
+        if first in payout_types:
+            current_type = first
+        elif current_type and re.search(r"[1-6１２３４５６不成立]", first):
+            offset = -1
+        else:
+            current_type = ""
+            continue
+        ticket_index = 1 + offset
+        payout_index = 2 + offset
+        popularity_index = 3 + offset
+        if ticket_index < 0 or payout_index >= len(cells):
+            continue
+        ticket_text = normalize_text(cells[ticket_index]["text"]).translate(
+            str.maketrans("１２３４５６－＝", "123456-=")
+        )
+        ticket_text = re.sub(r"\s+", "", ticket_text)
+        payout_match = re.search(r"[\d,]+", cells[payout_index]["text"])
+        if not ticket_text or "不成立" in ticket_text or not re.search(r"[1-6]", ticket_text) or not payout_match:
+            continue
+        popularity = None
+        if 0 <= popularity_index < len(cells):
+            popularity_match = re.search(r"\d+", cells[popularity_index]["text"])
+            if popularity_match:
+                popularity = int(popularity_match.group())
+        payouts.append({
+            "type": current_type,
+            "ticket": ticket_text,
+            "payout": int(payout_match.group().replace(",", "")),
+            "popularity": popularity,
+        })
+    return payouts
 
 
 def strip_tags(value):
@@ -1290,34 +1457,72 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
 
 
 def load_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
+    cached = get_cached_result(date, jcd, race)
+    if cached:
+        return cached
     compact_date = date.replace("-", "")
     path = f"/owpc/pc/race/raceresult?rno={race}&jcd={jcd}&hd={compact_date}"
     result_cache_seconds = CACHE_SECONDS if date < current_jst_date() else 60
     html_text = fetch_html(path, cache_seconds=result_cache_seconds, timeout=timeout)
     result = parse_result(html_text)
     weather = parse_weather(html_text)
-    return {
+    payouts = parse_payouts(html_text)
+    payload = {
         "date": date,
         "jcd": jcd,
         "race": race,
         "available": result is not None,
         "result": result,
         "weather": weather,
+        "payouts": payouts,
     }
+    store_result_payload(date, jcd, race, payload)
+    return payload
 
 
-def load_results(date, jcd):
+def normalize_race_list(races):
+    normalized = []
+    for race in races or range(1, 13):
+        try:
+            race_number = int(race)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= race_number <= 12 and race_number not in normalized:
+            normalized.append(race_number)
+    return normalized or list(range(1, 13))
+
+
+def load_results(date, jcd, races=None):
+    target_races = normalize_race_list(races)
     cache_key = f"{date}-{jcd}"
-    result_cache_seconds = CACHE_SECONDS if date < current_jst_date() else 45
     with results_cache_lock:
         cached = results_cache.get(cache_key)
-        if cached and time.time() - cached.get("savedAt", 0) < result_cache_seconds:
-            return cached["payload"]
-    results = {}
+        if cached:
+            cached_results = cached.get("payload", {}).get("results", {})
+            fresh_results = {
+                str(race): cached_results[str(race)]
+                for race in target_races
+                if str(race) in cached_results
+                and time.time() - cached.get("savedAt", 0) < get_result_cache_seconds(date, cached_results[str(race)])
+            }
+            if len(fresh_results) == len(target_races):
+                return {
+                    "date": date,
+                    "jcd": jcd,
+                    "results": fresh_results,
+                }
+            results = dict(cached_results)
+        else:
+            results = {}
+    missing_races = [
+        race for race in target_races
+        if str(race) not in results
+        or not get_cached_result(date, jcd, race)
+    ]
     with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {
             executor.submit(load_result, date, jcd, race): race
-            for race in range(1, 13)
+            for race in missing_races
         }
         for future in as_completed(futures):
             race = futures[future]
@@ -1336,13 +1541,25 @@ def load_results(date, jcd):
     payload = {
         "date": date,
         "jcd": jcd,
-        "results": results,
+        "results": {
+            str(race): results[str(race)]
+            for race in target_races
+            if str(race) in results
+        },
     }
     with results_cache_lock:
+        cached = results_cache.get(cache_key, {}).get("payload", {})
+        merged_results = dict(cached.get("results", {}))
+        merged_results.update(results)
         results_cache[cache_key] = {
             "savedAt": time.time(),
-            "payload": payload,
+            "payload": {
+                "date": date,
+                "jcd": jcd,
+                "results": merged_results,
+            },
         }
+    save_results_cache()
     return payload
 
 
@@ -1488,7 +1705,10 @@ class AppHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/result":
                 self.send_json(load_result(date, jcd, int(race)))
             elif parsed.path == "/api/results":
-                self.send_json(load_results(date, jcd))
+                requested_races = []
+                for value in query.get("races", []):
+                    requested_races.extend(value.split(","))
+                self.send_json(load_results(date, jcd, requested_races))
             elif parsed.path == "/api/signals":
                 self.send_json(load_signals(date, jcd, int(race)))
             else:
@@ -1533,6 +1753,8 @@ if __name__ == "__main__":
     print(f"SMARTPHONE URL: http://{local_ip}:{port}/")
     if os.environ.get("BOAT_STARTUP_WARMUP", "1") != "0":
         schedule_startup_warmup()
+    if os.environ.get("BOAT_RESULT_WARMER", "1") != "0":
+        schedule_result_warmer()
     if os.environ.get("BOAT_AUTO_BACKFILL", "1") != "0":
         schedule_admin_auto_backfill()
     server.serve_forever()
