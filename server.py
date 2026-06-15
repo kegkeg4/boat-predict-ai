@@ -1186,24 +1186,32 @@ def load_signals(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
 def load_program(date, jcd, selected_race, should_prefetch=True):
     program_key = f"{date}-{jcd}"
     recent_payload = None
+    stale_payload = None
     with program_cache_lock:
         stored = program_cache.get(program_key)
-        if stored and time.time() - stored.get("savedAt", 0) < CACHE_SECONDS:
+        if stored:
+            stored_age = time.time() - stored.get("savedAt", 0)
+            stale_payload = stored.get("payload")
+        if stored and stored_age < CACHE_SECONDS:
             if not stored["payload"].get("available"):
-                return stored["payload"]
-            recent_payload = stored["payload"]
-            stored_race = next(
-                (
-                    race
-                    for race in stored["payload"].get("races", [])
-                    if race["race"] == selected_race
-                ),
-                None,
-            )
-            if stored_race and stored_race.get("detailed"):
-                if should_prefetch:
-                    schedule_program_prefetch(date, jcd)
-                return stored["payload"]
+                if stored_age < 60:
+                    return stored["payload"]
+            else:
+                recent_payload = stored["payload"]
+                stored_race = next(
+                    (
+                        race
+                        for race in stored["payload"].get("races", [])
+                        if race["race"] == selected_race
+                    ),
+                    None,
+                )
+                if stored_race and stored_race.get("detailed"):
+                    if should_prefetch:
+                        schedule_program_prefetch(date, jcd)
+                    return stored["payload"]
+        elif stale_payload and stale_payload.get("available"):
+            recent_payload = stale_payload
 
     compact_date = date.replace("-", "")
     detail_path = (
@@ -1221,13 +1229,20 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
         with ThreadPoolExecutor(max_workers=2) as executor:
             index_future = executor.submit(fetch_html, index_path)
             detail_future = executor.submit(fetch_html, detail_path)
-            index_html = index_future.result()
+            try:
+                index_html = index_future.result()
+            except Exception:
+                if stale_payload and stale_payload.get("available"):
+                    return stale_payload
+                raise
             try:
                 detail_html = detail_future.result()
             except Exception:
                 detail_html = ""
         races = parse_race_index(index_html)
     if not races:
+        if stale_payload and stale_payload.get("available"):
+            return stale_payload
         payload = {"date": date, "jcd": jcd, "available": False, "races": []}
         with program_cache_lock:
             program_cache[program_key] = {

@@ -106,7 +106,7 @@ const VENUE_STATUS_CACHE_MS = 6 * 60 * 60 * 1000;
 const PERFORMANCE_BET_UNIT_YEN = 100;
 const RESULT_UNAVAILABLE_CACHE_MS = 15 * 1000;
 const REQUEST_TIMEOUT_MS = 10000;
-const MAIN_PROGRAM_TIMEOUT_MS = 15000;
+const MAIN_PROGRAM_TIMEOUT_MS = 25000;
 const BACKGROUND_PROGRAM_TIMEOUT_MS = 6000;
 const SIGNAL_TIMEOUT_MS = 7000;
 const RESULT_TIMEOUT_MS = 9000;
@@ -2403,7 +2403,7 @@ async function runPrediction(withLoading = true) {
           : "公式出走表の取得に失敗しました";
       document.querySelector("#unavailableState p").textContent =
         error.name === "TimeoutError"
-          ? "公式サイトまたは取得サーバーの応答が遅いため、10秒で打ち切りました。少し待って再実行してください。"
+          ? "公式サイトまたは取得サーバーの応答が遅いため、一定時間で打ち切りました。少し待って再実行してください。"
           : error instanceof TypeError
           ? "ローカル取得サーバーが停止している可能性があります。サーバー起動後に画面を再読み込みしてください。"
           : "公式サイトへの接続または取得サーバーを確認し、少し待って再実行してください。";
