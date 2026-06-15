@@ -29,6 +29,7 @@ PROGRAM_CACHE_FILE = CACHE_DIR / "programs.json"
 SCHEDULE_CACHE_FILE = CACHE_DIR / "schedules.json"
 RESULTS_CACHE_FILE = CACHE_DIR / "results.json"
 LEARNING_FILE = CACHE_DIR / "learning.json"
+SCHEDULE_CACHE_VERSION = 2
 JST = timezone(timedelta(hours=9))
 BOATRACE_JCDS = [f"{number:02d}" for number in range(1, 25)]
 VENUE_NAMES = [
@@ -1004,13 +1005,20 @@ def parse_race_index(html_text):
     return sorted(races, key=lambda item: item["race"])
 
 
-def parse_daily_venue_index(html_text):
+def parse_daily_venue_index(html_text, compact_date):
     active = {}
-    for match in re.finditer(r"raceindex\?jcd=(\d{2})(?:&amp;|&)hd=\d{8}", html_text):
-        active.setdefault(match.group(1), 12)
-    for match in re.finditer(r"racelist\?rno=(\d+)(?:&amp;|&)jcd=(\d{2})(?:&amp;|&)hd=\d{8}", html_text):
-        race = int(match.group(1))
-        jcd = match.group(2)
+    for raw_url in re.findall(r"(?:raceindex|racelist)\?[^\"'<> ]+", html_text):
+        url = raw_url.replace("&amp;", "&")
+        params = dict(re.findall(r"(jcd|hd|rno)=(\d+)", url))
+        if params.get("hd") != compact_date:
+            continue
+        jcd = params.get("jcd", "").zfill(2)
+        if jcd not in BOATRACE_JCDS:
+            continue
+        if "raceindex?" in url:
+            active.setdefault(jcd, 12)
+            continue
+        race = int(params.get("rno") or 0)
         active[jcd] = max(active.get(jcd, 0), race)
     if not active:
         return {}
@@ -1574,7 +1582,12 @@ def load_results(date, jcd, races=None):
 def load_venues_status(date):
     with venue_status_cache_lock:
         cached = venue_status_cache.get(date)
-        if cached and time.time() - cached.get("savedAt", 0) < CACHE_SECONDS:
+        cached_payload = cached.get("payload", {}) if cached else {}
+        if (
+            cached
+            and cached_payload.get("version") == SCHEDULE_CACHE_VERSION
+            and time.time() - cached.get("savedAt", 0) < CACHE_SECONDS
+        ):
             return cached["payload"]
     compact_date = date.replace("-", "")
     try:
@@ -1583,12 +1596,13 @@ def load_venues_status(date):
             cache_seconds=CACHE_SECONDS,
             timeout=12,
         )
-        venues_status = parse_daily_venue_index(index_html)
+        venues_status = parse_daily_venue_index(index_html, compact_date)
         if venues_status:
             payload = {
                 "date": date,
                 "venues": venues_status,
                 "source": "daily-index",
+                "version": SCHEDULE_CACHE_VERSION,
             }
             with venue_status_cache_lock:
                 venue_status_cache[date] = {
@@ -1633,6 +1647,7 @@ def load_venues_status(date):
     payload = {
         "date": date,
         "venues": venues_status,
+        "version": SCHEDULE_CACHE_VERSION,
     }
     with venue_status_cache_lock:
         venue_status_cache[date] = {

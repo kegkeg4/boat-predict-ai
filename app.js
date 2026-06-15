@@ -97,7 +97,7 @@ const venueCourseProfiles = {
 };
 const OFFICIAL_SIGNAL_WEIGHT = .35;
 const PROGRAM_CACHE_KEY = "boat-predict-official-programs-v1";
-const VENUE_STATUS_CACHE_KEY = "boat-predict-venue-status-v1";
+const VENUE_STATUS_CACHE_KEY = "boat-predict-venue-status-v2";
 const PREDICTION_CACHE_KEY = "boat-predict-prediction-snapshots-v1";
 const RESULT_CACHE_KEY = "boat-predict-official-results-v1";
 const LEARNING_LOG_KEY = "boat-predict-learning-log-v1";
