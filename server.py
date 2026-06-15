@@ -24,6 +24,9 @@ PAST_RESULT_CACHE_SECONDS = int(os.environ.get("BOAT_PAST_RESULT_CACHE_SECONDS",
 FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_FETCH_TIMEOUT", "8"))
 DETAIL_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_DETAIL_FETCH_TIMEOUT", "3"))
 ADMIN_BACKFILL_WORKERS = int(os.environ.get("BOAT_ADMIN_BACKFILL_WORKERS", "4"))
+ADMIN_BACKFILL_RESULT_TIMEOUT = float(os.environ.get("BOAT_ADMIN_RESULT_TIMEOUT", "16"))
+ADMIN_BACKFILL_SIGNAL_TIMEOUT = float(os.environ.get("BOAT_ADMIN_SIGNAL_TIMEOUT", "2"))
+BACKGROUND_SYNC_INTERVAL_SECONDS = int(os.environ.get("BOAT_BACKGROUND_SYNC_INTERVAL", "1800"))
 CACHE_DIR = Path(os.environ.get("BOAT_DATA_DIR", Path(__file__).with_name(".official-cache")))
 PROGRAM_CACHE_FILE = CACHE_DIR / "programs.json"
 SCHEDULE_CACHE_FILE = CACHE_DIR / "schedules.json"
@@ -404,7 +407,13 @@ def build_server_prediction_picks(racers, signals):
     return picks
 
 
-def build_admin_backfill_event(date, jcd, race):
+def build_admin_backfill_event(
+    date,
+    jcd,
+    race,
+    result_timeout=ADMIN_BACKFILL_RESULT_TIMEOUT,
+    signal_timeout=ADMIN_BACKFILL_SIGNAL_TIMEOUT,
+):
     program = load_program(date, jcd, race, should_prefetch=False)
     race_info = next((item for item in program.get("races", []) if item.get("race") == race), None)
     if not race_info:
@@ -425,10 +434,10 @@ def build_admin_backfill_event(date, jcd, race):
         }
         for index, racer in enumerate(racers)
     ]
-    result_payload = load_result(date, jcd, race, timeout=14)
+    result_payload = load_result(date, jcd, race, timeout=result_timeout)
     if not result_payload.get("available"):
         return None
-    signals = load_signals(date, jcd, race, timeout=5)
+    signals = load_signals(date, jcd, race, timeout=signal_timeout)
     picks = build_server_prediction_picks(racers, signals)
     if not picks:
         return None
@@ -509,6 +518,20 @@ def run_admin_backfill(date):
             if not race_numbers:
                 update_admin_backfill_status(completedVenues=index + 1)
                 continue
+            update_admin_backfill_status(
+                currentVenue=f"{venue} 結果先読み",
+                message=f"{venue}の確定結果をまとめて取得中",
+            )
+            try:
+                load_results(
+                    date,
+                    jcd,
+                    race_numbers,
+                    max_workers=2,
+                    timeout=ADMIN_BACKFILL_RESULT_TIMEOUT,
+                )
+            except Exception:
+                pass
             workers = max(1, min(ADMIN_BACKFILL_WORKERS, len(race_numbers)))
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {
@@ -639,7 +662,7 @@ def get_result_cache_seconds(date, payload=None):
     if date < current_jst_date():
         if payload and payload.get("available"):
             return PAST_RESULT_CACHE_SECONDS
-        return 15 * 60
+        return 0
     if payload and payload.get("available"):
         return CACHE_SECONDS
     return 45
@@ -837,6 +860,10 @@ def warm_completed_results_once(date=None):
         venues_payload = load_venues_status(target_date)
     except Exception:
         return
+    try:
+        load_pay_results(target_date, timeout=FETCH_TIMEOUT_SECONDS)
+    except Exception:
+        pass
     active_jcds = [
         jcd for jcd, status in (venues_payload.get("venues") or {}).items()
         if status.get("available")
@@ -863,8 +890,47 @@ def warm_completed_results_once(date=None):
 
 def result_warmer_worker():
     while True:
-        warm_completed_results_once()
-        time.sleep(180)
+        for offset in (-1, 0):
+            warm_completed_results_once(jst_date_offset(offset))
+        time.sleep(BACKGROUND_SYNC_INTERVAL_SECONDS)
+
+
+def background_data_sync_once():
+    today = current_jst_date()
+    for offset in (-1, 0, 1):
+        target_date = jst_date_offset(offset)
+        try:
+            venues_payload = load_venues_status(target_date)
+        except Exception:
+            venues_payload = {"venues": {}}
+        if offset <= 0:
+            try:
+                load_pay_results(target_date, timeout=FETCH_TIMEOUT_SECONDS)
+            except Exception:
+                pass
+        if target_date != today:
+            continue
+        active_jcds = [
+            jcd for jcd, status in (venues_payload.get("venues") or {}).items()
+            if status.get("available")
+        ]
+        for jcd in sorted(active_jcds):
+            try:
+                load_program(target_date, jcd, 1, should_prefetch=False)
+            except Exception:
+                pass
+            time.sleep(0.2)
+
+
+def background_data_sync_worker():
+    while True:
+        background_data_sync_once()
+        time.sleep(BACKGROUND_SYNC_INTERVAL_SECONDS)
+
+
+def schedule_background_data_sync():
+    thread = threading.Thread(target=background_data_sync_worker, daemon=True)
+    thread.start()
 
 
 def schedule_result_warmer():
@@ -1115,6 +1181,107 @@ def parse_result(html_text):
     if len(result) != 3 or len(set(result)) != 3 or payout is None:
         return None
     return {"result": result, "payout": payout}
+
+
+def parse_pay_results(html_text, compact_date):
+    results = {}
+    td_pattern = re.compile(r"<td\b([^>]*)>(.*?)</td>", re.S)
+    cells = []
+    href_pattern = re.compile(
+        rf'data-href="[^"]*raceresult\?rno=(\d+)&jcd=(\d{{2}})&hd={re.escape(compact_date)}"'
+    )
+    for attributes, body in td_pattern.findall(html_text):
+        href_match = href_pattern.search(attributes)
+        if not href_match:
+            continue
+        cells.append({
+            "race": int(href_match.group(1)),
+            "jcd": href_match.group(2),
+            "body": body,
+        })
+    for index in range(len(cells) - 2):
+        combo_cell, payout_cell, popularity_cell = cells[index:index + 3]
+        if (
+            combo_cell["race"] != payout_cell["race"]
+            or combo_cell["race"] != popularity_cell["race"]
+            or combo_cell["jcd"] != payout_cell["jcd"]
+            or combo_cell["jcd"] != popularity_cell["jcd"]
+        ):
+            continue
+        boats = [
+            int(value)
+            for value in re.findall(r'numberSet1_number[^>]*>\s*(\d)\s*</span>', combo_cell["body"])
+        ]
+        payout_match = re.search(r"(?:&yen;|¥)\s*([\d,]+)", payout_cell["body"])
+        popularity_values = re.findall(r">\s*(\d{1,3})\s*<", popularity_cell["body"])
+        if len(boats) != 3 or len(set(boats)) != 3 or not payout_match:
+            continue
+        payout = int(payout_match.group(1).replace(",", ""))
+        popularity = int(popularity_values[-1]) if popularity_values else None
+        jcd = combo_cell["jcd"]
+        race = combo_cell["race"]
+        results.setdefault(jcd, {})[race] = {
+            "date": f"{compact_date[:4]}-{compact_date[4:6]}-{compact_date[6:]}",
+            "jcd": jcd,
+            "race": race,
+            "available": True,
+            "result": {"result": boats, "payout": payout},
+            "weather": {"available": False},
+            "payouts": [
+                {
+                    "type": "3連単",
+                    "ticket": boats,
+                    "payout": payout,
+                    "popularity": popularity,
+                }
+            ],
+            "source": "pay",
+        }
+    return results
+
+
+def load_pay_results(date, timeout=FETCH_TIMEOUT_SECONDS):
+    compact_date = date.replace("-", "")
+    cache_seconds = PAST_RESULT_CACHE_SECONDS if date < current_jst_date() else 20
+    html_text = fetch_html(
+        f"/owpc/pc/race/pay?hd={compact_date}",
+        cache_seconds=cache_seconds,
+        timeout=timeout,
+    )
+    parsed = parse_pay_results(html_text, compact_date)
+    for jcd, race_map in parsed.items():
+        for race, payload in race_map.items():
+            store_result_payload(date, jcd, race, payload)
+    return parsed
+
+
+def merge_pay_venue_status(date, venues_status):
+    if date > current_jst_date():
+        return venues_status
+    try:
+        pay_results = load_pay_results(date, timeout=min(FETCH_TIMEOUT_SECONDS, 8))
+    except Exception:
+        return venues_status
+    merged = dict(venues_status or {})
+    for jcd, race_map in pay_results.items():
+        race_count = max(race_map.keys()) if race_map else 0
+        current = dict(merged.get(jcd) or {})
+        merged[jcd] = {
+            **current,
+            "jcd": jcd,
+            "available": True,
+            "races": max(int(current.get("races") or 0), race_count),
+            "payResults": len(race_map),
+            "source": "pay",
+        }
+    return merged
+
+
+def get_pay_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
+    try:
+        return (load_pay_results(date, timeout=timeout).get(jcd) or {}).get(race)
+    except Exception:
+        return None
 
 
 def parse_payouts(html_text):
@@ -1397,6 +1564,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
             recent_payload = stale_payload
 
     compact_date = date.replace("-", "")
+    index_path = f"/owpc/pc/race/raceindex?hd={compact_date}&jcd={jcd}"
     detail_path = (
         f"/owpc/pc/race/racelist?rno={selected_race}"
         f"&jcd={jcd}&hd={compact_date}"
@@ -1408,7 +1576,6 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
         except Exception:
             detail_html = ""
     else:
-        index_path = f"/owpc/pc/race/raceindex?hd={compact_date}&jcd={jcd}"
         with ThreadPoolExecutor(max_workers=2) as executor:
             index_future = executor.submit(fetch_html, index_path)
             detail_future = executor.submit(fetch_html, detail_path, CACHE_SECONDS, DETAIL_FETCH_TIMEOUT_SECONDS)
@@ -1423,6 +1590,11 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
             except Exception:
                 detail_html = ""
         races = parse_race_index(index_html)
+    if not races:
+        try:
+            races = parse_race_index(fetch_html(index_path, cache_seconds=0, timeout=FETCH_TIMEOUT_SECONDS))
+        except Exception:
+            races = []
     if not races:
         if stale_payload and stale_payload.get("available"):
             return stale_payload
@@ -1476,6 +1648,9 @@ def load_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
     cached = get_cached_result(date, jcd, race)
     if cached:
         return cached
+    pay_payload = get_pay_result(date, jcd, race, timeout=min(timeout, 12))
+    if pay_payload:
+        return pay_payload
     compact_date = date.replace("-", "")
     path = f"/owpc/pc/race/raceresult?rno={race}&jcd={jcd}&hd={compact_date}"
     result_cache_seconds = CACHE_SECONDS if date < current_jst_date() else 60
@@ -1508,9 +1683,17 @@ def normalize_race_list(races):
     return normalized or list(range(1, 13))
 
 
-def load_results(date, jcd, races=None):
+def load_results(date, jcd, races=None, max_workers=6, timeout=FETCH_TIMEOUT_SECONDS):
     target_races = normalize_race_list(races)
     cache_key = f"{date}-{jcd}"
+    try:
+        pay_results = load_pay_results(date, timeout=min(timeout, 12)).get(jcd, {})
+    except Exception:
+        pay_results = {}
+    for race in target_races:
+        payload = pay_results.get(race)
+        if payload:
+            store_result_payload(date, jcd, race, payload)
     with results_cache_lock:
         cached = results_cache.get(cache_key)
         if cached:
@@ -1535,9 +1718,10 @@ def load_results(date, jcd, races=None):
         if str(race) not in results
         or not get_cached_result(date, jcd, race)
     ]
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    workers = max(1, min(max_workers, len(missing_races) or 1))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(load_result, date, jcd, race): race
+            executor.submit(load_result, date, jcd, race, timeout): race
             for race in missing_races
         }
         for future in as_completed(futures):
@@ -1580,15 +1764,28 @@ def load_results(date, jcd, races=None):
 
 
 def load_venues_status(date):
+    cached = None
+    cached_payload = {}
     with venue_status_cache_lock:
         cached = venue_status_cache.get(date)
         cached_payload = cached.get("payload", {}) if cached else {}
-        if (
-            cached
-            and cached_payload.get("version") == SCHEDULE_CACHE_VERSION
-            and time.time() - cached.get("savedAt", 0) < CACHE_SECONDS
-        ):
-            return cached["payload"]
+    if (
+        cached
+        and cached_payload.get("version") == SCHEDULE_CACHE_VERSION
+        and time.time() - cached.get("savedAt", 0) < CACHE_SECONDS
+    ):
+        merged_venues = merge_pay_venue_status(date, cached_payload.get("venues", {}))
+        if merged_venues != cached_payload.get("venues", {}):
+            payload = dict(cached_payload)
+            payload["venues"] = merged_venues
+            with venue_status_cache_lock:
+                venue_status_cache[date] = {
+                    "savedAt": cached.get("savedAt", time.time()),
+                    "payload": payload,
+                }
+            save_schedule_cache()
+            return payload
+        return cached_payload
     compact_date = date.replace("-", "")
     try:
         index_html = fetch_html(
@@ -1598,6 +1795,7 @@ def load_venues_status(date):
         )
         venues_status = parse_daily_venue_index(index_html, compact_date)
         if venues_status:
+            venues_status = merge_pay_venue_status(date, venues_status)
             payload = {
                 "date": date,
                 "venues": venues_status,
@@ -1644,6 +1842,7 @@ def load_venues_status(date):
                 "races": len(races),
                 "cached": False,
             }
+    venues_status = merge_pay_venue_status(date, venues_status)
     payload = {
         "date": date,
         "venues": venues_status,
@@ -1777,7 +1976,7 @@ if __name__ == "__main__":
     if os.environ.get("BOAT_STARTUP_WARMUP", "1") != "0":
         schedule_startup_warmup()
     if os.environ.get("BOAT_RESULT_WARMER", "1") != "0":
-        schedule_result_warmer()
+        schedule_background_data_sync()
     if os.environ.get("BOAT_AUTO_BACKFILL", "1") != "0":
         schedule_admin_auto_backfill()
     server.serve_forever()

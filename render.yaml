@@ -18,6 +18,8 @@ services:
         value: "1"
       - key: BOAT_RESULT_WARMER
         value: "1"
+      - key: BOAT_BACKGROUND_SYNC_INTERVAL
+        value: "900"
       - key: BOAT_FETCH_TIMEOUT
         value: "8"
       - key: BOAT_DETAIL_FETCH_TIMEOUT
@@ -26,6 +28,10 @@ services:
         value: "2592000"
       - key: BOAT_ADMIN_BACKFILL_WORKERS
         value: "4"
+      - key: BOAT_ADMIN_RESULT_TIMEOUT
+        value: "16"
+      - key: BOAT_ADMIN_SIGNAL_TIMEOUT
+        value: "2"
       - key: BOAT_DATA_DIR
         value: /var/data/boat-predict
     disk:
