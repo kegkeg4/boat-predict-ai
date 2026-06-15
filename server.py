@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 import re
+import signal
 import threading
 import time
 import socket
@@ -24,6 +25,7 @@ PAST_RESULT_CACHE_SECONDS = int(os.environ.get("BOAT_PAST_RESULT_CACHE_SECONDS",
 FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_FETCH_TIMEOUT", "8"))
 PROGRAM_INDEX_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PROGRAM_INDEX_TIMEOUT", "14"))
 DETAIL_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_DETAIL_FETCH_TIMEOUT", "3"))
+CACHE_FLUSH_INTERVAL_SECONDS = int(os.environ.get("BOAT_CACHE_FLUSH_INTERVAL", "30"))
 ADMIN_BACKFILL_WORKERS = int(os.environ.get("BOAT_ADMIN_BACKFILL_WORKERS", "4"))
 ADMIN_BACKFILL_RESULT_TIMEOUT = float(os.environ.get("BOAT_ADMIN_RESULT_TIMEOUT", "16"))
 ADMIN_BACKFILL_SIGNAL_TIMEOUT = float(os.environ.get("BOAT_ADMIN_SIGNAL_TIMEOUT", "2"))
@@ -55,6 +57,8 @@ results_cache_lock = threading.Lock()
 results_cache = {}
 signals_cache_lock = threading.Lock()
 signals_cache = {}
+cache_flush_lock = threading.Lock()
+dirty_cache_files = set()
 prefetch_lock = threading.Lock()
 prefetching_programs = set()
 warmup_lock = threading.Lock()
@@ -620,13 +624,7 @@ program_cache = read_program_cache()
 
 
 def save_program_cache():
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    temporary = PROGRAM_CACHE_FILE.with_suffix(".tmp")
-    temporary.write_text(
-        json.dumps(program_cache, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    temporary.replace(PROGRAM_CACHE_FILE)
+    request_cache_save("program")
 
 
 def read_schedule_cache():
@@ -637,12 +635,7 @@ def read_schedule_cache():
 
 
 def save_schedule_cache():
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    temporary = SCHEDULE_CACHE_FILE.with_suffix(".tmp")
-    with venue_status_cache_lock:
-        snapshot = dict(venue_status_cache)
-    temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
-    temporary.replace(SCHEDULE_CACHE_FILE)
+    request_cache_save("schedule")
 
 
 venue_status_cache.update(read_schedule_cache())
@@ -656,12 +649,7 @@ def read_results_cache():
 
 
 def save_results_cache():
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    temporary = RESULTS_CACHE_FILE.with_suffix(".tmp")
-    with results_cache_lock:
-        snapshot = dict(results_cache)
-        temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
-        temporary.replace(RESULTS_CACHE_FILE)
+    request_cache_save("results")
 
 
 def get_result_cache_seconds(date, payload=None):
@@ -717,15 +705,7 @@ def read_signals_cache():
 
 
 def save_signals_cache():
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    temporary = SIGNALS_CACHE_FILE.with_suffix(".tmp")
-    with signals_cache_lock:
-        snapshot = dict(signals_cache)
-    temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
-    try:
-        temporary.replace(SIGNALS_CACHE_FILE)
-    except OSError:
-        pass
+    request_cache_save("signals")
 
 
 def get_signals_cache_seconds(date, payload=None):
@@ -762,6 +742,63 @@ def store_signals_payload(date, jcd, race, payload):
 
 
 signals_cache.update(read_signals_cache())
+
+
+def write_json_atomic(path, payload):
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    try:
+        temporary.replace(path)
+    except OSError:
+        pass
+
+
+def request_cache_save(name):
+    with cache_flush_lock:
+        dirty_cache_files.add(name)
+
+
+def flush_cache_file(name):
+    if name == "program":
+        with program_cache_lock:
+            snapshot = dict(program_cache)
+        write_json_atomic(PROGRAM_CACHE_FILE, snapshot)
+    elif name == "schedule":
+        with venue_status_cache_lock:
+            snapshot = dict(venue_status_cache)
+        write_json_atomic(SCHEDULE_CACHE_FILE, snapshot)
+    elif name == "results":
+        with results_cache_lock:
+            snapshot = dict(results_cache)
+        write_json_atomic(RESULTS_CACHE_FILE, snapshot)
+    elif name == "signals":
+        with signals_cache_lock:
+            snapshot = dict(signals_cache)
+        write_json_atomic(SIGNALS_CACHE_FILE, snapshot)
+
+
+def flush_dirty_caches_once():
+    with cache_flush_lock:
+        targets = sorted(dirty_cache_files)
+        dirty_cache_files.clear()
+    for target in targets:
+        try:
+            flush_cache_file(target)
+        except Exception:
+            with cache_flush_lock:
+                dirty_cache_files.add(target)
+
+
+def cache_flush_worker():
+    while True:
+        time.sleep(CACHE_FLUSH_INTERVAL_SECONDS)
+        flush_dirty_caches_once()
+
+
+def schedule_cache_flush_worker():
+    thread = threading.Thread(target=cache_flush_worker, daemon=True)
+    thread.start()
 
 
 def schedule_program_prefetch(date, jcd):
@@ -1699,7 +1736,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
                     "savedAt": time.time(),
                     "payload": payload,
                 }
-                save_program_cache()
+            save_program_cache()
         return payload
 
     selected = next(
@@ -1733,7 +1770,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
             "savedAt": time.time(),
             "payload": payload,
         }
-        save_program_cache()
+    save_program_cache()
     if should_prefetch:
         schedule_program_prefetch(date, jcd)
     return payload
@@ -1941,6 +1978,7 @@ def load_venues_status(date):
     payload = {
         "date": date,
         "venues": venues_status,
+        "source": "raceindex-fallback",
         "version": SCHEDULE_CACHE_VERSION,
     }
     with venue_status_cache_lock:
@@ -2062,16 +2100,34 @@ if __name__ == "__main__":
     host = "0.0.0.0"
     port = int(os.environ.get("PORT", "4174"))
     server = ThreadingHTTPServer((host, port), AppHandler)
+    shutdown_requested = threading.Event()
+
+    def graceful_shutdown(signum, frame):
+        if shutdown_requested.is_set():
+            return
+        shutdown_requested.set()
+        try:
+            flush_dirty_caches_once()
+        finally:
+            threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, graceful_shutdown)
+    signal.signal(signal.SIGINT, graceful_shutdown)
+
     try:
         local_ip = socket.gethostbyname(socket.gethostname())
     except OSError:
         local_ip = "このMacのWi-Fi IP"
     print(f"BOAT PREDICT AI: http://127.0.0.1:{port}/")
     print(f"SMARTPHONE URL: http://{local_ip}:{port}/")
+    schedule_cache_flush_worker()
     if os.environ.get("BOAT_STARTUP_WARMUP", "1") != "0":
         schedule_startup_warmup()
     if os.environ.get("BOAT_RESULT_WARMER", "1") != "0":
         schedule_background_data_sync()
     if os.environ.get("BOAT_AUTO_BACKFILL", "1") != "0":
         schedule_admin_auto_backfill()
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        flush_dirty_caches_once()
