@@ -182,7 +182,7 @@ def record_learning_events(events):
                 existing_source = existing.get("source") or (
                     "server-backfill" if existing.get("phase") == "server-backfill" else "prediction-screen"
                 )
-                if incoming_source == "server-backfill":
+                if incoming_source == "server-backfill" and existing_source == "prediction-screen":
                     continue
                 if existing_source == "prediction-screen" and incoming_source != "prediction-screen":
                     continue
@@ -311,11 +311,14 @@ def get_admin_performance(date):
                 "nerai": {"stake": 0, "return": 0, "net": 0, "hits": 0},
                 "ana": {"stake": 0, "return": 0, "net": 0, "hits": 0},
                 "recommended": {"stake": 0, "return": 0, "net": 0, "hits": 0, "races": 0},
+                "sources": {},
                 "net": 0,
             },
         )
         row["races"] += 1
         totals["races"] += 1
+        source = event.get("source") or ("server-backfill" if event.get("phase") == "server-backfill" else "prediction-screen")
+        row["sources"][source] = row["sources"].get(source, 0) + 1
         result_key = normalize_ticket(event.get("result"))
         payout = int(event.get("payout") or 0)
         picks = event.get("picks") if isinstance(event.get("picks"), list) else []
@@ -590,7 +593,7 @@ def build_admin_backfill_event(
     }
 
 
-def run_admin_backfill(date):
+def run_admin_backfill(date, force=False):
     update_admin_backfill_status(
         active=True,
         date=date,
@@ -622,7 +625,7 @@ def run_admin_backfill(date):
             races = int((venues_payload.get("venues") or {}).get(jcd, {}).get("races") or 12)
             race_numbers = [
                 race for race in range(1, min(12, races) + 1)
-                if f"{date}-{venue}-{race}" not in existing_keys
+                if force or f"{date}-{venue}-{race}" not in existing_keys
             ]
             venue_events = []
             if not race_numbers:
@@ -694,7 +697,7 @@ def schedule_admin_backfill(date, force=False):
             "startedAt": datetime.now(JST).isoformat(timespec="seconds"),
             "finishedAt": None,
         })
-    thread = threading.Thread(target=run_admin_backfill, args=(date,), daemon=True)
+    thread = threading.Thread(target=run_admin_backfill, args=(date, force), daemon=True)
     thread.start()
     return get_admin_backfill_status()
 

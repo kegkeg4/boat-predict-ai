@@ -107,7 +107,10 @@ function renderPerformance(payload) {
 
   tableBody.innerHTML = rows.map((row) => `
     <tr>
-      <td>${row.venue}</td>
+      <td>
+        ${row.venue}
+        ${row.sources ? `<small class="admin-source-note">${Object.entries(row.sources).map(([source, count]) => `${source}:${count}`).join(" / ")}</small>` : ""}
+      </td>
       <td class="${row.honmei.net >= 0 ? "plus" : "minus"}">${formatSignedYen(row.honmei.net)}</td>
       <td class="${row.nerai.net >= 0 ? "plus" : "minus"}">${formatSignedYen(row.nerai.net)}</td>
       <td class="${row.ana.net >= 0 ? "plus" : "minus"}">${formatSignedYen(row.ana.net)}</td>
