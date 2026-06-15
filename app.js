@@ -1445,7 +1445,7 @@ function formatPayoutTicket(ticketText) {
   if (!parts.length) return normalized || "―";
   return parts.map((part, index) => `
     ${index ? `<i>${separator}</i>` : ""}
-    ${/^[1-6]$/.test(part) ? boatBadge(Number(part)) : `<b>${part}</b>`}
+    ${/^[1-6]$/.test(part) ? `<span class="payout-boat boat-${Number(part)}">${part}</span>` : `<b>${part}</b>`}
   `).join("");
 }
 
