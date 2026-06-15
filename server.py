@@ -201,7 +201,19 @@ def record_learning_events(events):
 def normalize_ticket(ticket):
     if not isinstance(ticket, list):
         return ""
-    return "-".join(str(int(value)) for value in ticket if isinstance(value, (int, float)))
+    parts = []
+    for value in ticket:
+        if isinstance(value, dict):
+            value = value.get("boat")
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            parts.append(str(int(value)))
+        elif isinstance(value, str):
+            normalized = value.strip()
+            if normalized.isdigit():
+                parts.append(str(int(normalized)))
+    return "-".join(parts)
 
 
 def get_admin_performance(date):

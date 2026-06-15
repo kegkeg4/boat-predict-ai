@@ -2345,9 +2345,19 @@ function saveLearningLog(rows) {
   const venue = venues[Number(venueSelect.value)].name;
   const serverEvents = [];
   let hasChanges = false;
+  const normalizeLearningTicket = (ticket) => Array.isArray(ticket)
+    ? ticket.map((value) => Number(value?.boat ?? value)).filter((value) => Number.isInteger(value) && value >= 1 && value <= 6)
+    : [];
+  const normalizeLearningPicks = (picks) => Array.isArray(picks)
+    ? picks.map((pick) => ({
+        ...pick,
+        ticket: normalizeLearningTicket(pick.ticket)
+      }))
+    : [];
   judgedRows.forEach((row) => {
     const key = `${dateInput.value}-${venue}-${row.race}`;
-    const predictedLeader = row.prediction.picks[0]?.ticket?.[0] || row.prediction.data?.ranking?.[0]?.boat || null;
+    const normalizedPicks = normalizeLearningPicks(row.prediction.picks);
+    const predictedLeader = normalizedPicks[0]?.ticket?.[0] || row.prediction.data?.ranking?.[0]?.boat || null;
     const event = {
       key,
       date: dateInput.value,
@@ -2355,7 +2365,7 @@ function saveLearningLog(rows) {
       race: row.race,
       result: row.official.result,
       payout: row.official.payout,
-      picks: row.prediction.picks,
+      picks: normalizedPicks,
       predictedLeader,
       weather: row.prediction.data?.weather?.label,
       wind: row.prediction.data?.wind,
