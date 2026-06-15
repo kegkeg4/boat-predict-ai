@@ -6,7 +6,8 @@ learning.json を読み込み、保存済みの予測ログから以下を出力
   1. データ概要
   2. 戦略別サマリー（本命/狙い目/穴: 1点的中率・レース単位の的中率・回収率）
   3. 予測確率の校正（予測確率の十分位ごとに、実際の的中率と回収率）
-  4. 期待値スコア(valueScore)帯別の回収率（買い目しきい値が機能しているかの検証）
+  4. 市場オッズ比較（AUC / log損失）
+  5. 期待値スコア(valueScore)帯別の回収率（買い目しきい値が機能しているかの検証）
 
 依存ライブラリなし（標準ライブラリのみ）。Render 上でもそのまま動きます。
 
@@ -79,6 +80,31 @@ def normalized_model_probability(probability, denominator):
 def binary_logloss(probability, hit):
     probability = clamp_probability(probability)
     return -math.log(probability if hit else 1 - probability)
+
+
+def roc_auc(rows, score_key):
+    positives = [r for r in rows if r["hit"]]
+    negatives = [r for r in rows if not r["hit"]]
+    if not positives or not negatives:
+        return None
+    ranked = sorted((r[score_key], 1 if r["hit"] else 0) for r in rows)
+    rank_sum = 0.0
+    rank = 1
+    index = 0
+    while index < len(ranked):
+        score = ranked[index][0]
+        end = index
+        positives_in_tie = 0
+        while end < len(ranked) and ranked[end][0] == score:
+            positives_in_tie += ranked[end][1]
+            end += 1
+        average_rank = (rank + rank + (end - index) - 1) / 2
+        rank_sum += positives_in_tie * average_rank
+        rank += end - index
+        index = end
+    pos_count = len(positives)
+    neg_count = len(negatives)
+    return (rank_sum - pos_count * (pos_count + 1) / 2) / (pos_count * neg_count)
 
 
 def load_events(path):
@@ -349,11 +375,11 @@ def section_valuescore(rows):
 
 def section_market_comparison(rows):
     print("=" * 72)
-    print(" 4. 市場オッズ比較  （log損失は低いほど良い）")
+    print(" 4. 市場オッズ比較  （AUCはスケール不変、log損失は校正後の参考）")
     print("=" * 72)
     usable = [
         r for r in rows
-        if r["prob"] > 0 and (r["marketProb"] > 0 or r["odds"] > 0)
+        if r["prob"] > 0 and r.get("oddsSource") == "official" and r["marketProb"] > 0
     ]
     if not usable:
         print("  公式オッズ由来の市場確率を計算できる pick がありません。公式オッズ取得後のログが必要です。")
@@ -362,35 +388,45 @@ def section_market_comparison(rows):
     denominator = 100.0 if max(r["prob"] for r in usable) > 1.5 else 1.0
     for r in usable:
         r["modelProb"] = normalized_model_probability(r["prob"], denominator)
-        market_probability = r["marketProb"] or (1 / r["odds"] if r["odds"] > 0 else 0)
-        r["marketProbNorm"] = clamp_probability(market_probability)
+        r["marketProbNorm"] = clamp_probability(r["marketProb"])
         r["marketEdge"] = r["modelProb"] - r["marketProbNorm"]
+    model_auc = roc_auc(usable, "modelProb")
+    market_auc = roc_auc(usable, "marketProbNorm")
     model_ll = sum(binary_logloss(r["modelProb"], r["hit"]) for r in usable) / len(usable)
     market_ll = sum(binary_logloss(r["marketProbNorm"], r["hit"]) for r in usable) / len(usable)
     print(f"  対象点数               : {len(usable)}")
     print("  対象                   : oddsSource=official の買い目のみ")
-    print(f"  モデル平均log損失      : {model_ll:.4f}")
-    print(f"  市場オッズ平均log損失  : {market_ll:.4f}")
-    if model_ll < market_ll:
-        print("  判定                   : モデル確率が市場より良い可能性あり")
-    else:
-        print("  判定                   : 現状は市場オッズの方が確率として優秀")
+    print(f"  モデルAUC              : {model_auc:.4f}" if model_auc is not None else "  モデルAUC              : n/a")
+    print(f"  市場オッズAUC          : {market_auc:.4f}" if market_auc is not None else "  市場オッズAUC          : n/a")
+    if model_auc is not None and market_auc is not None:
+        if model_auc > market_auc:
+            print("  判定                   : モデルの並べ方が市場より良い可能性あり")
+        elif model_auc < market_auc:
+            print("  判定                   : 市場の並べ方がモデルより優秀")
+        else:
+            print("  判定                   : モデルと市場の並べ方は同等")
+    print(f"  モデル平均log損失      : {model_ll:.4f}  ※未校正スコアでは参考値")
+    print(f"  市場オッズ平均log損失  : {market_ll:.4f}  ※控除率分の過大推定あり")
     print()
 
-    print("  戦略別: モデル vs 市場 log損失")
-    print("      戦略       点数    モデルLL   市場LL    回収率")
-    print("      ----       ----    --------   ------    ------")
+    print("  戦略別: モデル vs 市場 AUC / log損失")
+    print("      戦略       点数   モデルAUC  市場AUC   モデルLL   市場LL    回収率")
+    print("      ----       ----   ---------  -------   --------   ------    ------")
     for strat in STRATEGY_ORDER + sorted(set(r["strategy"] for r in usable) - set(STRATEGY_ORDER) - {"?"}):
         sub = [r for r in usable if r["strategy"] == strat]
         if not sub:
             continue
         stake = sum(r["stake"] for r in sub)
         returns = sum(r["return"] for r in sub)
+        sub_model_auc = roc_auc(sub, "modelProb")
+        sub_market_auc = roc_auc(sub, "marketProbNorm")
         sub_model_ll = sum(binary_logloss(r["modelProb"], r["hit"]) for r in sub) / len(sub)
         sub_market_ll = sum(binary_logloss(r["marketProbNorm"], r["hit"]) for r in sub) / len(sub)
-        print("      {:<8} {:>5}    {:>8.4f}   {:>6.4f}  {:>7.1f}%".format(
+        print("      {:<8} {:>5}   {:>9}  {:>7}   {:>8.4f}   {:>6.4f}  {:>7.1f}%".format(
             STRATEGY_LABEL.get(strat, strat),
             len(sub),
+            f"{sub_model_auc:.4f}" if sub_model_auc is not None else "n/a",
+            f"{sub_market_auc:.4f}" if sub_market_auc is not None else "n/a",
             sub_model_ll,
             sub_market_ll,
             roi_pct(returns, stake),
@@ -428,7 +464,7 @@ def section_howto():
     print("  ・回収率 100% = トントン。控除率25%があるため、エッジが無いと自然に75%前後へ収束します。")
     print("  ・校正(3節): 『平均予測確率』と『実的中率』が一致していれば確率は正しい。")
     print("    乖離が大きい＝probability が確率になっていない（スコアのまま）サイン。")
-    print("  ・市場比較(4節): 公式オッズ由来の市場確率より log損失が低いかを確認します。")
+    print("  ・市場比較(4節): 校正前はAUCを重視。log損失は確率校正後のKPIとして見ます。")
     print("  ・価値検証(5節B): valueScore が高い帯ほど回収率が高い、という右肩上がりが出れば、")
     print("    しきい値で買い目を絞る意味がある。全帯フラットに負けていればエッジ無し＝")
     print("    しきい値を緩めて買い増しても改善しない（むしろ悪化する）。")
