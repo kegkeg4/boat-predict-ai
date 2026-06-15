@@ -330,11 +330,19 @@ function readPredictionSnapshotStore() {
 }
 
 function writePredictionSnapshotStore(store) {
-  const entries = Object.entries(store)
-    .filter(([, item]) => item?.savedAt && Date.now() - item.savedAt < PREDICTION_CACHE_MS)
-    .sort(([, a], [, b]) => (b.savedAt || 0) - (a.savedAt || 0))
-    .slice(0, 240);
-  localStorage.setItem(PREDICTION_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
+  try {
+    const entries = Object.entries(store)
+      .filter(([, item]) => item?.savedAt && Date.now() - item.savedAt < PREDICTION_CACHE_MS)
+      .sort(([, a], [, b]) => (b.savedAt || 0) - (a.savedAt || 0))
+      .slice(0, 40);
+    localStorage.setItem(PREDICTION_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch (error) {
+    try {
+      localStorage.removeItem(PREDICTION_CACHE_KEY);
+    } catch {
+      // Prediction cache is optional. Never block race rendering.
+    }
+  }
 }
 
 function getCachedPredictionSnapshot() {
@@ -346,13 +354,17 @@ function getCachedPredictionSnapshot() {
 }
 
 function storePredictionSnapshot(data) {
-  if (!data?.racers?.length || !data?.ranking?.length) return;
-  const store = readPredictionSnapshotStore();
-  store[getPredictionSnapshotKey()] = {
-    savedAt: Date.now(),
-    data
-  };
-  writePredictionSnapshotStore(store);
+  try {
+    if (!data?.racers?.length || !data?.ranking?.length) return;
+    const store = readPredictionSnapshotStore();
+    store[getPredictionSnapshotKey()] = {
+      savedAt: Date.now(),
+      data
+    };
+    writePredictionSnapshotStore(store);
+  } catch {
+    // Prediction cache is a speed boost only; live prediction must keep working.
+  }
 }
 
 function createTimeoutError() {
@@ -2571,13 +2583,28 @@ async function runPrediction(withLoading = true) {
   const cachedPrediction = getCachedPredictionSnapshot();
   if (withLoading) {
     if (cachedPrediction) {
-      currentData = cachedPrediction;
-      unavailableState.hidden = true;
-      loadingState.hidden = true;
-      dashboard.hidden = false;
-      predictButton.disabled = false;
-      updateRaceButtonStates();
-      renderRace(cachedPrediction);
+      try {
+        currentData = cachedPrediction;
+        unavailableState.hidden = true;
+        loadingState.hidden = true;
+        dashboard.hidden = false;
+        predictButton.disabled = false;
+        updateRaceButtonStates();
+        renderRace(cachedPrediction);
+      } catch (error) {
+        console.warn(error);
+        try {
+          localStorage.removeItem(PREDICTION_CACHE_KEY);
+        } catch {
+          // Ignore unavailable storage.
+        }
+        dashboard.hidden = true;
+        unavailableState.hidden = true;
+        loadingState.hidden = false;
+        predictButton.disabled = true;
+        document.querySelector("#loadingMessage").textContent =
+          "BOAT RACE公式の出走表を取得しています...";
+      }
     } else {
       dashboard.hidden = true;
       unavailableState.hidden = true;
