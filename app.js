@@ -1879,6 +1879,54 @@ function buildTicketStrategyGroups(data) {
   ];
 }
 
+function buildExactaPicks(data) {
+  const used = new Set();
+  const fromTrifecta = buildTicketCandidates(data)
+    .map((pick) => {
+      const ticket = pick.ticket.slice(0, 2);
+      const key = ticket.map((racer) => racer.boat).join("-");
+      return {
+        ticket,
+        probability: pick.pairProbability,
+        estimatedOdds: clamp(pick.estimatedOdds / 3.8, 1.2, 80),
+        valueScore: pick.pairProbability * clamp(pick.estimatedOdds / 3.8, 1.2, 80),
+        actualOdds: false,
+        sourceKey: key,
+      };
+    })
+    .filter((pick) => {
+      if (used.has(pick.sourceKey)) return false;
+      used.add(pick.sourceKey);
+      return true;
+    });
+  const leaders = data.ranking.slice(0, 3);
+  const fallback = [];
+  leaders.forEach((first) => {
+    data.ranking
+      .filter((second) => second.boat !== first.boat)
+      .slice(0, 4)
+      .forEach((second) => {
+        const probability = clamp((first.probability / 100) * (second.probability / Math.max(1, 100 - first.probability)) * 100 * 1.35, .1, 42);
+        const estimatedOdds = clamp(.78 / Math.max(.004, probability / 100), 1.2, 80);
+        fallback.push({
+          ticket: [first, second],
+          probability,
+          estimatedOdds,
+          valueScore: probability * estimatedOdds,
+          actualOdds: false,
+          sourceKey: `${first.boat}-${second.boat}`,
+        });
+      });
+  });
+  return ensurePickCount(fromTrifecta, fallback, 3, new Set())
+    .map((pick, index) => ({
+      ...pick,
+      strategyKey: "exacta",
+      strategyLabel: "2連単",
+      strategyIndex: index,
+    }));
+}
+
 function renderTicketGroup(mainSelector, subSelector, group, mainLabel) {
   const picks = group.picks;
   document.querySelector(mainSelector).innerHTML = picks[0]
@@ -1894,13 +1942,15 @@ function renderTicketGroup(mainSelector, subSelector, group, mainLabel) {
 
 function renderTicketStrategies(data) {
   const [honmei, nerai, ana] = buildTicketStrategyGroups(data);
+  const exacta = { key: "exacta", label: "2連単", count: 3, picks: buildExactaPicks(data) };
   renderTicketGroup("#solidTicket", "#solidSubTickets", honmei, "本命");
   renderTicketGroup("#aimTicket", "#aimSubTickets", nerai, "狙い目");
   renderTicketGroup("#upsetTicket", "#upsetSubTickets", ana, "穴");
+  renderTicketGroup("#exactaMainTicket", "#exactaSubTickets", exacta, "2連単");
   const profile = buildBetDecision(data, [honmei, nerai, ana]);
   const note = document.querySelector("#ticketStrategyNote");
   if (note) {
-    note.textContent = `${profile.label}: ${profile.text}`;
+    note.textContent = `${profile.label}: ${profile.text} コロガシは2連単3点で判定します。`;
     note.className = `ticket-note ${profile.key}`;
   }
 }
@@ -2115,6 +2165,16 @@ function getPrimaryPredictionForRace(race) {
   if (!raceData) return null;
   const groups = buildTicketStrategyGroups(raceData);
   const betDecision = buildBetDecision(raceData, groups, race);
+  const exactaPicks = buildExactaPicks(raceData).map((pick) => ({
+    ticket: pick.ticket.map((racer) => racer.boat),
+    probability: pick.probability,
+    estimatedOdds: pick.estimatedOdds,
+    actualOdds: pick.actualOdds,
+    valueScore: pick.valueScore,
+    strategyKey: pick.strategyKey,
+    strategyLabel: pick.strategyLabel,
+    strategyIndex: pick.strategyIndex,
+  }));
   const picks = groups.flatMap((group) =>
     group.picks.map((pick, index) => ({
       ticket: pick.ticket.map((racer) => racer.boat),
@@ -2135,6 +2195,7 @@ function getPrimaryPredictionForRace(race) {
     data: raceData,
     betDecision,
     ticket: picks[0]?.ticket || raceData.ranking.slice(0, 3).map((racer) => racer.boat),
+    exactaPicks,
     groups: groups.map((group) => ({ key: group.key, label: group.label, picks: picks.filter((pick) => pick.strategyKey === group.key) })),
     picks
   };
@@ -2204,9 +2265,13 @@ function calculateDailyPerformance() {
     const resultKey = official.result.join("-");
     row.hitIndex = prediction.picks.findIndex((pick) => pick.ticket.join("-") === resultKey);
     row.hitPick = row.hitIndex >= 0 ? prediction.picks[row.hitIndex] : null;
-    row.exactaHit = prediction.picks.some((pick) =>
+    row.exactaHit = prediction.exactaPicks.some((pick) =>
       pick.ticket[0] === official.result[0] && pick.ticket[1] === official.result[1]
     );
+    row.exactaHitPick = prediction.exactaPicks.find((pick) =>
+      pick.ticket[0] === official.result[0] && pick.ticket[1] === official.result[1]
+    ) || null;
+    row.exactaPayout = row.exactaHitPick ? getOfficialPayout(official, "2連単", row.exactaHitPick.ticket) : 0;
     row.leaderHit = prediction.picks.some((pick) => pick.ticket[0] === official.result[0]);
     Object.values(totals.strategy).forEach((strategy) => {
       strategy.stake += strategy.count * PERFORMANCE_BET_UNIT_YEN;
@@ -2274,8 +2339,105 @@ function getDailyPerformanceTotals() {
   return totals;
 }
 
+function getKorogashiGameCandidate(totals = getDailyPerformanceTotals()) {
+  const candidates = [];
+  totals.rows.forEach((row) => {
+    const exactaPicks = row.prediction.exactaPicks || [];
+    if (!exactaPicks.length) return;
+    const topExacta = exactaPicks[0];
+    const decision = row.betDecision || { key: "miokuri", label: "見送り", buy: false };
+    const tendency = buildRaceRanking(row.prediction.data).find((item) => item.race === row.race) || {};
+    const confidence = exactaPicks.reduce((sum, pick) => sum + pick.probability, 0) * 2.2
+      + topExacta.valueScore * .24
+      + (decision.buy ? 14 : -8)
+      + Math.max(0, (tendency.solid || 50) - 55) * .35;
+    candidates.push({
+      row,
+      pick: topExacta,
+      exactaPicks,
+      decision,
+      confidence,
+    });
+  });
+  return candidates.sort((a, b) => b.confidence - a.confidence)[0] || null;
+}
+
+function renderKorogashiGame(totals = getDailyPerformanceTotals()) {
+  const badge = document.querySelector("#korogashiGameBadge");
+  const content = document.querySelector("#korogashiGameContent");
+  if (!badge || !content) return;
+  const candidate = getKorogashiGameCandidate(totals);
+  if (!candidate) {
+    badge.textContent = "候補なし";
+    content.innerHTML = `<p class="performance-empty">公式出走表を取得できると、コロガシ候補を表示します。</p>`;
+    return;
+  }
+  const { row, pick, exactaPicks, decision } = candidate;
+  const ticketText = exactaPicks.map((item) => renderTicketText(item.ticket)).join(" / ");
+  const exactaResult = row.official ? row.official.result.slice(0, 2) : [];
+  const hitPick = row.official ? exactaPicks.find((item) => item.ticket.join("-") === exactaResult.join("-")) : null;
+  const hit = Boolean(hitPick);
+  const finished = Boolean(row.official);
+  const exactaPayout = hitPick ? getOfficialPayout(row.official, "2連単", hitPick.ticket) : 0;
+  const balance = hit ? 700 + exactaPayout : finished ? 700 : 1000;
+  const resultLabel = finished
+    ? hit ? `的中 ${formatYen(balance)}へ` : "不的中 残700円"
+    : "レース前";
+  badge.textContent = decision.buy ? "勝負候補" : "様子見候補";
+  badge.className = decision.buy ? "buy" : "watch";
+  content.innerHTML = `
+    <article class="korogashi-main ${finished ? hit ? "hit" : "miss" : "waiting"}">
+      <div>
+        <small>${venues[Number(venueSelect.value)].name}で一番自信あり</small>
+        <h3>${row.race}R 2連単3点</h3>
+        <p>${decision.label}。2連単3点を各100円で買い、的中した払戻を次に転がす候補です。</p>
+      </div>
+      <div class="korogashi-ticket">
+        ${exactaPicks.map((item, pickIndex) => `
+          <span class="korogashi-exacta ${hitPick && hitPick.ticket.join("-") === item.ticket.join("-") ? "matched" : ""}">
+            ${item.ticket.map((boat, index) => `${index ? "<i>›</i>" : ""}${boatBadge(boat, true)}`).join("")}
+          </span>
+          ${pickIndex < exactaPicks.length - 1 ? "<em>/</em>" : ""}
+        `).join("")}
+      </div>
+    </article>
+    <div class="korogashi-game-stats">
+      <span><small>スタート</small><b>1,000円</b></span>
+      <span><small>買い方</small><b>2連単3点×100円</b></span>
+      <span><small>買い目</small><b>${ticketText}</b></span>
+      <span><small>最高AI確率</small><b>${pick.probability.toFixed(2)}%</b></span>
+      <span class="${finished ? hit ? "plus" : "minus" : ""}"><small>ゲーム結果</small><b>${resultLabel}</b></span>
+    </div>
+    <button class="korogashi-jump" type="button" data-korogashi-race="${row.race}">${row.race}Rの予測を見る</button>
+  `;
+  const jumpButton = content.querySelector("[data-korogashi-race]");
+  jumpButton?.addEventListener("click", () => {
+    selectedRace = Number(jumpButton.dataset.korogashiRace);
+    updateRaceButtonStates();
+    updateActionButton();
+    runPrediction(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+}
+
 function renderTicketText(ticket) {
   return ticket.join("-");
+}
+
+function normalizePayoutTicket(ticket) {
+  return String(ticket || "").replace(/[＝=]/g, "-").replace(/\s+/g, "");
+}
+
+function getOfficialPayout(official, type, ticket) {
+  const ticketKey = Array.isArray(ticket) ? ticket.join("-") : normalizePayoutTicket(ticket);
+  const row = (official?.payouts || []).find((item) =>
+    item.type === type && normalizePayoutTicket(item.ticket) === ticketKey
+  );
+  if (row && Number.isFinite(Number(row.payout))) return Number(row.payout);
+  if (type === "3連単" && official?.payout && ticketKey === official.result?.join("-")) {
+    return official.payout;
+  }
+  return 0;
 }
 
 function formatYen(value) {
@@ -2315,7 +2477,7 @@ function renderPerformanceRaceList(rows) {
         <div class="performance-result">
           <small>確定</small>
           <b>${resultText}</b>
-          ${row.official ? `<em>${row.exactaHit ? "2連単形OK / " : ""}${row.official.payout.toLocaleString("ja-JP")}円</em>` : ""}
+          ${row.official ? `<em>${row.exactaHit ? `2連単 ${row.exactaPayout.toLocaleString("ja-JP")}円 / ` : ""}3連単 ${row.official.payout.toLocaleString("ja-JP")}円</em>` : ""}
         </div>
         ${row.official ? `
           <div class="performance-money ${row.simulatedNet >= 0 ? "plus" : "minus"}">
@@ -2333,6 +2495,11 @@ function renderPerformanceRaceList(rows) {
           ${row.prediction.picks.map((pick, index) => `
             <span class="${row.official && pick.ticket.join("-") === row.official.result.join("-") ? "matched" : ""}">
               ${pick.strategyLabel}${pick.strategyIndex + 1} ${renderTicketText(pick.ticket)}
+            </span>
+          `).join("")}
+          ${row.prediction.exactaPicks.map((pick) => `
+            <span class="${row.official && pick.ticket.join("-") === row.official.result.slice(0, 2).join("-") ? "matched exacta" : "exacta"}">
+              2連単${pick.strategyIndex + 1} ${renderTicketText(pick.ticket)}
             </span>
           `).join("")}
         </div>
@@ -2406,6 +2573,7 @@ function saveLearningLog(rows) {
       result: row.official.result,
       payout: row.official.payout,
       picks: normalizedPicks,
+      exactaPicks: normalizeLearningPicks(row.prediction.exactaPicks),
       racers: normalizeLearningRacers(row.prediction.data?.racers),
       odds3t: normalizeLearningOdds(row.prediction.data?.oddsMap),
       betDecision: {
@@ -2489,6 +2657,7 @@ function renderDailyPerformance(options = {}) {
     `対象は${formatDate(dateInput.value)} ${venues[Number(venueSelect.value)].name}。3連単は本命5点・狙い目1点・穴1点の合計7点で集計します。`;
   document.querySelector("#simulatedProfitNote").textContent =
     `判定済み${totals.judged}レースで、本命だけは5点、狙い目だけ・穴だけは各1点を${PERFORMANCE_BET_UNIT_YEN}円ずつ購入した場合の仮想収支です。払戻は公式3連単の100円あたり払戻で計算しています。`;
+  renderKorogashiGame(totals);
   saveLearningLog(totals.rows);
   if (renderList) renderPerformanceRaceList(totals.rows);
 }

@@ -462,10 +462,12 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .solid-ticket-section .ticket-section-title b { color: #0877f9; }
 .aim-ticket-section .ticket-section-title b { color: #9a6a00; }
 .upset-ticket-section .ticket-section-title b { color: #dc5262; }
+.exacta-ticket-section .ticket-section-title b { color: #198a79; }
 .main-ticket { display: flex; align-items: center; gap: 9px; margin-top: 17px; padding: 14px; border-radius: 9px; background: #071f37; }
 .ticket-section .main-ticket { margin-top: 0; }
 .aim-main-ticket { background: linear-gradient(120deg, #332a12, #182d3f); }
 .upset-main-ticket { background: linear-gradient(120deg, #351b2b, #18253a); }
+.exacta-main-ticket { background: linear-gradient(120deg, #123a33, #18354a); }
 .ticket-label { margin-right: auto; color: #829cb3; font-size: 9px; }
 .ticket-meta { margin-left: auto; color: #9db2c5; font-size: 8px; font-weight: 800; white-space: nowrap; }
 .ticket-boat { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 5px; font-size: 13px; font-weight: 800; }
@@ -594,6 +596,8 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .performance-picks { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
 .performance-picks span { padding: 4px 6px; border-radius: 5px; color: #52677c; background: #eef3f8; font-size: 9px; font-weight: 700; }
 .performance-picks span.matched { color: #fff; background: #10a979; }
+.performance-picks span.exacta { color: #5f4f8d; background: #f1edff; }
+.performance-picks span.exacta.matched { color: #fff; background: #8a63d2; }
 .simulated-profit-card { margin-top: 16px; padding: 18px; border: 1px solid #d9e5f0; border-radius: 13px; background: linear-gradient(135deg, #fff, #f5faff); }
 .simulated-profit-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
 .simulated-profit-head h3 { margin: 0; font-size: 16px; letter-spacing: -.02em; }
@@ -616,6 +620,31 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .strategy-profit-metrics b { color: #33485d; font-size: 10px; line-height: 1.2; word-break: keep-all; }
 .strategy-profit-grid article.plus strong { color: #0a9a70; }
 .strategy-profit-grid article.minus strong { color: #cf4053; }
+.korogashi-game { margin-top: 18px; padding: 22px 24px; background: linear-gradient(135deg, #fff, #f7fbff 58%, #fff8ed); }
+.korogashi-game .card-heading > span { padding: 7px 10px; border-radius: 999px; color: #0877f9; background: #eaf4ff; font-size: 10px; font-weight: 900; white-space: nowrap; }
+.korogashi-game .card-heading > span.buy { color: #0a9a70; background: #e6f8f1; }
+.korogashi-game .card-heading > span.watch { color: #9a7312; background: #fff7df; }
+.korogashi-game-content { display: grid; gap: 12px; margin-top: 14px; }
+.korogashi-main { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 17px; border: 1px solid #d9e6f3; border-radius: 15px; background: #fff; box-shadow: 0 12px 28px rgba(19, 37, 58, .06); }
+.korogashi-main.hit { border-color: #bde4d6; background: linear-gradient(135deg, #f3fbf8, #fff); }
+.korogashi-main.miss { border-color: #f0c5cc; background: linear-gradient(135deg, #fff7f8, #fff); }
+.korogashi-main small { display: block; color: #8190a1; font-size: 9px; font-weight: 900; letter-spacing: .12em; }
+.korogashi-main h3 { margin: 5px 0 6px; color: #14263b; font-size: clamp(22px, 3vw, 32px); letter-spacing: -.04em; }
+.korogashi-main p { margin: 0; color: #64778a; font-size: 11px; line-height: 1.6; }
+.korogashi-ticket { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+.korogashi-ticket .table-boat { width: 38px; height: 38px; font-size: 16px; }
+.korogashi-ticket i { color: #9aa8b6; font-style: normal; font-weight: 900; }
+.korogashi-ticket em { color: #9aa8b6; font-style: normal; font-weight: 900; }
+.korogashi-exacta { display: flex; align-items: center; gap: 5px; padding: 5px; border: 1px solid #e1e9f2; border-radius: 9px; background: #f7faff; }
+.korogashi-exacta.matched { border-color: #8a63d2; background: #f2edff; box-shadow: 0 0 0 2px rgba(138, 99, 210, .08); }
+.korogashi-game-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 9px; }
+.korogashi-game-stats span { min-width: 0; padding: 12px; border: 1px solid #e3ebf3; border-radius: 11px; background: #fff; }
+.korogashi-game-stats small { display: block; margin-bottom: 4px; color: #8b99a8; font-size: 8px; font-weight: 900; letter-spacing: .08em; }
+.korogashi-game-stats b { color: #1b2d42; font-size: 14px; word-break: keep-all; }
+.korogashi-game-stats .plus b { color: #0a9a70; }
+.korogashi-game-stats .minus b { color: #cf4053; }
+.korogashi-jump { justify-self: start; padding: 10px 14px; border: 0; border-radius: 9px; color: #fff; background: #0877f9; font-size: 11px; font-weight: 900; cursor: pointer; }
+.korogashi-jump:hover { background: #006ee8; }
 
 .racer-card { margin-top: 18px; padding: 22px 24px 10px; }
 .legend { display: flex; align-items: center; gap: 7px; color: #8a99aa; font-size: 9px; }
@@ -728,6 +757,8 @@ footer { display: flex; justify-content: space-between; padding: 22px 3px 0; col
   .daily-performance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .performance-race-list { grid-template-columns: 1fr; }
   .strategy-profit-grid { grid-template-columns: 1fr; }
+  .korogashi-main { grid-template-columns: 1fr; }
+  .korogashi-game-stats { grid-template-columns: 1fr 1fr; }
 }
 
 @media (max-width: 820px) {
@@ -804,5 +835,8 @@ footer { display: flex; justify-content: space-between; padding: 22px 3px 0; col
   .simulated-profit-head { display: block; }
   .simulated-profit-head > span { display: inline-block; margin-top: 10px; }
   .strategy-profit-grid { grid-template-columns: 1fr; }
+  .korogashi-game { padding: 19px 15px; }
+  .korogashi-ticket .table-boat { width: 32px; height: 32px; font-size: 13px; }
+  .korogashi-game-stats { grid-template-columns: 1fr; }
   .value-legend span { display: none; }
 }

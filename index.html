@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260616-bet-decision-tune">
+  <link rel="stylesheet" href="styles.css?v=20260616-exacta-korogashi">
 </head>
 <body>
   <div class="app-shell">
@@ -258,6 +258,11 @@
                 <div id="upsetTicket" class="main-ticket upset-main-ticket"></div>
                 <div id="upsetSubTickets" class="sub-tickets"></div>
               </div>
+              <div class="ticket-section exacta-ticket-section">
+                <div class="ticket-section-title"><b>2連単3点</b><span>コロガシ用・1着2着勝負</span></div>
+                <div id="exactaMainTicket" class="main-ticket exacta-main-ticket"></div>
+                <div id="exactaSubTickets" class="sub-tickets"></div>
+              </div>
               <p id="ticketStrategyNote" class="ticket-note">本命は5点で的中率を広めに確保。狙い目と穴は1点ずつに絞り、回収率と高配当を検証します。</p>
             </div>
 
@@ -451,6 +456,18 @@
           </div>
         </section>
 
+        <section id="korogashiGame" class="card korogashi-game">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">PLAY MONEY GAME</p>
+              <h2>今日のコロガシ候補</h2>
+            </div>
+            <span id="korogashiGameBadge">解析中</span>
+          </div>
+          <p class="section-description">選択中の会場12レースから、AIが一番「転がしやすい」と見た1点をゲーム感覚で表示します。毎日1,000円スタートのプレイマネー想定です。</p>
+          <div id="korogashiGameContent" class="korogashi-game-content"></div>
+        </section>
+
         <footer>
           <p>予測は的中を保証するものではありません。投票はご自身の判断と責任で行ってください。</p>
           <p>BOAT PREDICT AI / PROTOTYPE</p>
@@ -459,6 +476,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260616-bet-decision-tune"></script>
+  <script src="app.js?v=20260616-exacta-korogashi"></script>
 </body>
 </html>
