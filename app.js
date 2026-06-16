@@ -247,6 +247,7 @@ let performanceRefreshInFlight = false;
 let selectedResultRefreshInFlight = false;
 let performanceRenderTimer = null;
 let performanceCache = { key: "", totals: null };
+let resultBoardRequestId = 0;
 let predictionByRaceCache = {};
 let isPremiumMode = localStorage.getItem(PLAN_MODE_KEY) === "premium";
 let venueStatusByDate = loadStoredVenueStatus();
@@ -937,12 +938,14 @@ function setupControls() {
     renderRecentDates();
     updateRaceButtonStates();
     updateActionButton();
+    loadResultBoard();
     runPrediction(true);
   });
   venueSelect.addEventListener("change", () => {
     renderRecentDates();
     updateRaceButtonStates();
     updateActionButton();
+    loadResultBoard();
     runPrediction(true);
   });
 
@@ -962,6 +965,7 @@ function setupControls() {
   }
   renderRecentDates();
   refreshVenueStatus(dateInput.value);
+  loadResultBoard();
   updateRaceButtonStates();
 }
 
@@ -1599,7 +1603,7 @@ function ensurePayoutBoardStyles() {
     .payout-boat{width:30px!important;height:34px!important;display:grid!important;place-items:center!important;flex:0 0 auto!important;border-radius:4px!important;font-size:22px!important;font-weight:900!important;box-shadow:0 2px 2px rgba(0,0,0,.35)!important}
     .payout-money{padding-right:12px!important;font-size:23px!important;font-weight:900!important;text-align:right!important;letter-spacing:.03em!important}
     .payout-popularity{color:#fff!important;font-size:15px!important;font-weight:900!important}
-    .payout-summary{display:grid!important;grid-template-columns:repeat(3,1fr)!important;gap:1px!important;background:rgba(255,255,255,.15)!important}
+    .payout-summary{display:grid!important;grid-template-columns:repeat(4,1fr)!important;gap:1px!important;background:rgba(255,255,255,.15)!important}
     .payout-summary div{padding:10px 12px!important;background:rgba(8,31,47,.62)!important}
     .payout-summary small{display:block!important;margin-bottom:4px!important;color:#a9d7ff!important;font-size:8px!important;font-weight:900!important;letter-spacing:.12em!important}
     .payout-summary strong{color:#fff!important;font-size:13px!important}
@@ -1625,10 +1629,11 @@ function buildResultPayoutRows(official) {
   });
 }
 
-function renderPayoutBoard(official, hitPick, predictedFirst) {
+function renderPayoutBoard(official, hitPick, predictedFirst, exactaHitPick = null, exactaPayout = 0) {
   ensurePayoutBoardStyles();
   const rows = buildResultPayoutRows(official);
   const resultKey = official.result.join("-");
+  const exactaKey = official.result.slice(0, 2).join("-");
   return `
     <div class="payout-board">
       <div class="payout-board-header">
@@ -1648,7 +1653,8 @@ function renderPayoutBoard(official, hitPick, predictedFirst) {
       </div>
       <div class="payout-summary">
         <div><small>確定3連単</small><strong>${resultKey}</strong></div>
-        <div><small>予測判定</small><strong>${hitPick ? `${hitPick.strategyLabel}${hitPick.strategyIndex + 1}点目で的中` : "7点は不的中"}</strong></div>
+        <div><small>3連単予測</small><strong>${hitPick ? `${hitPick.strategyLabel}${hitPick.strategyIndex + 1}点目で的中` : "7点は不的中"}</strong></div>
+        <div><small>2連単予測</small><strong>${exactaHitPick ? `3点内的中 ${exactaPayout.toLocaleString("ja-JP")}円` : `${exactaKey} / 3点は不的中`}</strong></div>
         <div><small>1着評価</small><strong>${official.result[0] === predictedFirst.boat ? "1着艇を的中" : `${official.result[0]}号艇が勝利`}</strong></div>
       </div>
     </div>
@@ -1698,15 +1704,23 @@ function renderOfficialResult(data) {
     pick.ticket.map((racer) => racer.boat).join("-") === resultKey
   );
   const hitPick = hitIndex >= 0 ? valuePicks[hitIndex] : null;
+  const exactaPicks = buildExactaPicks(data);
+  const exactaResultKey = official.result.slice(0, 2).join("-");
+  const exactaHitPick = exactaPicks.find((pick) =>
+    pick.ticket.map((racer) => racer.boat).join("-") === exactaResultKey
+  ) || null;
+  const exactaPayout = exactaHitPick ? getOfficialPayout(official, "2連単", exactaResultKey) : 0;
   const badge = document.querySelector("#resultHitBadge");
-  badge.className = `result-hit-badge ${hitIndex >= 0 ? "hit" : "miss"}`;
-  badge.textContent = hitPick ? `${hitPick.strategyLabel}${hitPick.strategyIndex + 1}点目で的中` : "7点は不的中";
+  badge.className = `result-hit-badge ${hitPick || exactaHitPick ? "hit" : "miss"}`;
+  badge.textContent = hitPick
+    ? `3連単 ${hitPick.strategyLabel}${hitPick.strategyIndex + 1}点目で的中`
+    : exactaHitPick ? "2連単3点内的中" : "3連単・2連単とも不的中";
   const predictedFirst = data.ranking[0];
   const winner = official.result[0];
-  document.querySelector(".result-grid").innerHTML = renderPayoutBoard(official, hitPick, predictedFirst);
+  document.querySelector(".result-grid").innerHTML = renderPayoutBoard(official, hitPick, predictedFirst, exactaHitPick, exactaPayout);
   document.querySelector("#resultComment").textContent = winner === predictedFirst.boat
-    ? `AI本命の${predictedFirst.boat}号艇が1着。予測時点の評価と実際の結果が一致しました。`
-    : `AI本命は${predictedFirst.boat}号艇でしたが、確定結果は${resultKey}。終了後も予測を上書きせず、外れ方を検証データとして残します。`;
+    ? `AI本命の${predictedFirst.boat}号艇が1着。2連単は${exactaHitPick ? `3点内的中、払戻${exactaPayout.toLocaleString("ja-JP")}円です。` : "3点内では不的中です。"}`
+    : `AI本命は${predictedFirst.boat}号艇でしたが、確定結果は${resultKey}。2連単は${exactaHitPick ? `3点内的中、払戻${exactaPayout.toLocaleString("ja-JP")}円です。` : "3点内では不的中です。"}`;
   resultCard.hidden = false;
 }
 
@@ -2508,6 +2522,75 @@ function renderPerformanceRaceList(rows) {
   }).join("");
 }
 
+function renderResultBoard(payload) {
+  const status = document.querySelector("#resultBoardStatus");
+  const summary = document.querySelector("#resultBoardSummary");
+  const races = document.querySelector("#resultBoardRaces");
+  if (!status || !summary || !races) return;
+  if (!payload || !payload.summary) {
+    status.textContent = "未集計";
+    summary.innerHTML = "";
+    races.innerHTML = `<p class="performance-empty">予測ログが保存されると結果ボードを表示します。</p>`;
+    return;
+  }
+  const items = ["honmei", "nerai", "ana", "nirentan"]
+    .map((key) => ({ key, ...(payload.summary[key] || {}) }));
+  const judged = items.reduce((max, item) => Math.max(max, Number(item.races) || 0), 0);
+  status.textContent = judged ? `${judged}R判定` : "未確定";
+  summary.innerHTML = items.map((item) => `
+    <article class="result-board-stat ${item.available === false ? "disabled" : item.key}">
+      <small>${item.label || item.key}${item.points ? `${item.points}点` : ""}</small>
+      <strong>${item.available === false ? "未取得" : `${item.hitRate || 0}%`}</strong>
+      <span>的中 ${item.hitRaces || 0}/${item.races || 0}R</span>
+      <b>回収率 ${item.available === false ? "—" : `${item.roi || 0}%`}</b>
+    </article>
+  `).join("");
+  races.innerHTML = (payload.races || []).map((row) => {
+    const hits = Array.isArray(row.hits) ? row.hits : [];
+    const hitHtml = hits.length
+      ? hits.map((hit) => {
+        const multiplier = Number(hit.multiplier || 0);
+        const tier = hit.tier || (multiplier >= 100 ? "rainbow" : multiplier >= 50 ? "gold" : "");
+        const prefix = tier === "rainbow" ? "★ 万舟 " : tier === "gold" ? "★ 50倍 " : "";
+        return `
+        <span class="result-board-chip ${hit.group || ""}${tier ? ` ${tier}` : ""}">
+          ${prefix}${hit.label} ${hit.betType} ×${multiplier.toFixed(1)}
+        </span>
+      `;
+      }).join("")
+      : row.status === "confirmed"
+        ? `<span class="result-board-chip miss">— ハズレ</span>`
+        : `<span class="result-board-chip pending">未確定</span>`;
+    return `
+      <article class="result-board-race ${hits.length ? "hit" : row.status === "confirmed" ? "miss" : "pending"}">
+        <strong>${row.race}R</strong>
+        <div>${hitHtml}</div>
+      </article>
+    `;
+  }).join("");
+}
+
+async function loadResultBoard() {
+  const status = document.querySelector("#resultBoardStatus");
+  if (!status || !dateInput.value || !venueSelect.value) return;
+  const requestId = ++resultBoardRequestId;
+  const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
+  status.textContent = "読込中";
+  try {
+    const response = await fetchWithTimeout(
+      `/api/result-board?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}`,
+      { timeoutMs: 5000 }
+    );
+    const payload = await response.json();
+    if (requestId !== resultBoardRequestId) return;
+    renderResultBoard(payload);
+  } catch (error) {
+    if (requestId !== resultBoardRequestId) return;
+    status.textContent = "取得失敗";
+    renderResultBoard(null);
+  }
+}
+
 function saveLearningLog(rows) {
   const judgedRows = rows.filter((row) => row.official);
   if (!judgedRows.length) return Promise.resolve({ events: 0 });
@@ -2563,6 +2646,8 @@ function saveLearningLog(rows) {
   judgedRows.forEach((row) => {
     const key = `${dateInput.value}-${venue}-${row.race}`;
     const normalizedPicks = normalizeLearningPicks(row.prediction.picks);
+    const result2t = row.official.result.slice(0, 2);
+    const payout2t = getOfficialPayout(row.official, "2連単", result2t);
     const predictedLeader = normalizedPicks[0]?.ticket?.[0] || row.prediction.data?.ranking?.[0]?.boat || null;
     const decision = row.betDecision || row.prediction.betDecision || BET_MODE_CONFIG.miokuri;
     const event = {
@@ -2572,6 +2657,8 @@ function saveLearningLog(rows) {
       race: row.race,
       result: row.official.result,
       payout: row.official.payout,
+      payout2t,
+      payouts: row.official.payouts || [],
       picks: normalizedPicks,
       exactaPicks: normalizeLearningPicks(row.prediction.exactaPicks),
       racers: normalizeLearningRacers(row.prediction.data?.racers),
@@ -2658,7 +2745,7 @@ function renderDailyPerformance(options = {}) {
   document.querySelector("#simulatedProfitNote").textContent =
     `判定済み${totals.judged}レースで、本命だけは5点、狙い目だけ・穴だけは各1点を${PERFORMANCE_BET_UNIT_YEN}円ずつ購入した場合の仮想収支です。払戻は公式3連単の100円あたり払戻で計算しています。`;
   renderKorogashiGame(totals);
-  saveLearningLog(totals.rows);
+  saveLearningLog(totals.rows).then(() => loadResultBoard()).catch(() => loadResultBoard());
   if (renderList) renderPerformanceRaceList(totals.rows);
 }
 

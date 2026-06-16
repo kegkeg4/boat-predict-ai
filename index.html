@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="競艇・ボートレース予測AIが公式データ、天候、風、波、モーター、選手成績、展示情報を分析。3連単の本命・狙い目・穴予測、期待値ランキング、予測成績を確認できます。">
+  <meta name="description" content="競艇・ボートレース予測AIが公式データ、天候、風、波、モーター、選手成績、展示情報を分析。3連単の本命・狙い目・穴予測、期待値ランキングを確認できます。">
   <meta name="keywords" content="競艇,ボートレース,競艇予測,ボートレース予想,競艇AI,競艇予測屋,競艇予想AI,3連単予想">
   <meta name="robots" content="index,follow">
   <link rel="canonical" href="https://boat-predict-ai.onrender.com/">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://boat-predict-ai.onrender.com/">
   <meta property="og:title" content="競艇・ボートレース予測AI | BOAT PREDICT AI">
-  <meta property="og:description" content="公式データ、天候、風、波、モーター、選手成績から競艇・ボートレースをAI分析。3連単の本命・狙い目・穴予測と予測成績を確認できます。">
+  <meta property="og:description" content="公式データ、天候、風、波、モーター、選手成績から競艇・ボートレースをAI分析。3連単の本命・狙い目・穴予測と期待値ランキングを確認できます。">
   <meta property="og:site_name" content="BOAT PREDICT AI">
   <meta name="twitter:card" content="summary">
   <title>競艇・ボートレース予測AI | 競艇予測と3連単期待値分析</title>
@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260616-exacta-korogashi">
+  <link rel="stylesheet" href="styles.css?v=20260616-result-board">
 </head>
 <body>
   <div class="app-shell">
@@ -60,10 +60,6 @@
         <a class="nav-item" href="#raceRanking">
           <span class="nav-icon">▥</span>
           注目レース
-        </a>
-        <a class="nav-item" href="#performance">
-          <span class="nav-icon">✓</span>
-          予測成績
         </a>
         <a class="nav-item" href="#plans">
           <span class="nav-icon">¥</span>
@@ -373,7 +369,7 @@
           <p class="official-note">出走選手・登録番号・級別・全国／当地勝率・平均ST・モーター成績・締切時刻はBOAT RACE公式出走表の値です。公式評価信号はコンピューター予想を参照する設計です。</p>
         </section>
 
-        <section id="performance" class="card performance-card premium-feature">
+        <section id="performance" class="card performance-card premium-feature" hidden aria-hidden="true">
           <div class="daily-performance-head">
             <div>
               <p class="eyebrow">TODAY RESULT</p>
@@ -432,6 +428,19 @@
           </div>
         </section>
 
+        <section id="resultBoard" class="card result-board-card premium-feature">
+          <div class="result-board-head">
+            <div>
+              <p class="eyebrow">RESULT BOARD</p>
+              <h2>12レース予測結果ボード</h2>
+            </div>
+            <span id="resultBoardStatus">読込中</span>
+          </div>
+          <p class="result-board-note">当選時は払戻金額ではなく倍率だけを表示します。未確定レースは的中率・回収率の分母から外します。</p>
+          <div id="resultBoardSummary" class="result-board-summary"></div>
+          <div id="resultBoardRaces" class="result-board-races"></div>
+        </section>
+
         <section id="plans" class="plan-panel">
           <div class="plan-copy">
             <p class="eyebrow">FREE / PREMIUM</p>
@@ -476,6 +485,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260616-exacta-korogashi"></script>
+  <script src="app.js?v=20260616-result-board"></script>
 </body>
 </html>

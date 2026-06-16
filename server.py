@@ -48,6 +48,7 @@ VENUE_NAMES = [
     "尼崎", "鳴門", "丸亀", "児島", "宮島", "徳山",
     "下関", "若松", "芦屋", "福岡", "唐津", "大村",
 ]
+MANFUNE_YEN = 10000
 cache = {}
 fetch_locks = {}
 fetch_locks_guard = threading.Lock()
@@ -219,6 +220,41 @@ def normalize_ticket(ticket):
     return "-".join(parts)
 
 
+def normalize_payout_ticket(ticket):
+    if isinstance(ticket, list):
+        return normalize_ticket(ticket)
+    normalized = str(ticket or "").translate(str.maketrans("１２３４５６－＝", "123456-="))
+    normalized = normalized.replace("=", "-")
+    normalized = re.sub(r"\s+", "", normalized)
+    parts = re.findall(r"[1-6]", normalized)
+    return "-".join(parts)
+
+
+def extract_payout_value(payouts, bet_type, result_key):
+    if not isinstance(payouts, list) or not result_key:
+        return 0
+    for payout in payouts:
+        if not isinstance(payout, dict) or payout.get("type") != bet_type:
+            continue
+        if normalize_payout_ticket(payout.get("ticket")) != result_key:
+            continue
+        try:
+            return int(payout.get("payout") or 0)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def payout_multiplier(payout):
+    try:
+        value = float(payout)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return round(value / 100, 1)
+
+
 def pick_value_score(pick):
     try:
         value = pick.get("valueScore")
@@ -272,6 +308,142 @@ def normalize_bet_decision(event, picks):
     if best_score >= 96 and water_risk <= 10:
         return {"key": "kenjitsu", "label": labels["kenjitsu"], "buy": True, "strategyKeys": ["honmei"]}
     return {"key": "miokuri", "label": labels["miokuri"], "buy": False, "strategyKeys": []}
+
+
+def result_board_strategy_templates():
+    return {
+        "honmei": {"label": "本命", "betType": "3連単"},
+        "nerai": {"label": "狙い目", "betType": "3連単"},
+        "ana": {"label": "穴", "betType": "3連単"},
+        "nirentan": {"label": "2連単", "betType": "2連単"},
+    }
+
+
+def build_result_board(date, jcd):
+    venue_index = int(jcd) - 1
+    venue = VENUE_NAMES[venue_index] if 0 <= venue_index < len(VENUE_NAMES) else jcd
+    store = read_learning_store()
+    events_by_race = {}
+    for event in (store.get("events") or {}).values():
+        if not isinstance(event, dict):
+            continue
+        if event.get("date") != date or event.get("venue") != venue:
+            continue
+        try:
+            race_number = int(event.get("race") or 0)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= race_number <= 12:
+            current = events_by_race.get(race_number)
+            if not current or str(current.get("savedAt") or "") <= str(event.get("savedAt") or ""):
+                events_by_race[race_number] = event
+
+    templates = result_board_strategy_templates()
+    summary = {
+        key: {
+            "label": config["label"],
+            "betType": config["betType"],
+            "points": 0,
+            "hitRaces": 0,
+            "races": 0,
+            "hitRate": 0,
+            "roi": 0,
+            "available": key != "nirentan",
+        }
+        for key, config in templates.items()
+    }
+    internal = {
+        key: {"stake": 0, "return": 0}
+        for key in templates
+    }
+    rows = []
+    for race in range(1, 13):
+        event = events_by_race.get(race)
+        row = {
+            "race": race,
+            "status": "unconfirmed",
+            "result": "",
+            "hits": [],
+        }
+        if not event:
+            rows.append(row)
+            continue
+        result_key = normalize_ticket(event.get("result"))
+        result2t_key = normalize_ticket((event.get("result") or [])[:2])
+        payout3t = int(event.get("payout") or 0)
+        payout2t = int(event.get("payout2t") or 0)
+        if not payout2t:
+            payout2t = extract_payout_value(event.get("payouts"), "2連単", result2t_key)
+        if not result_key or not payout3t:
+            rows.append(row)
+            continue
+        row["status"] = "confirmed"
+        row["result"] = result_key
+        strategy_picks = {
+            "honmei": [],
+            "nerai": [],
+            "ana": [],
+            "nirentan": [],
+        }
+        for pick in (event.get("picks") if isinstance(event.get("picks"), list) else []):
+            if not isinstance(pick, dict):
+                continue
+            strategy_key = pick.get("strategyKey")
+            ticket_key = normalize_ticket(pick.get("ticket"))
+            if strategy_key in ("honmei", "nerai", "ana") and len(ticket_key.split("-")) == 3:
+                strategy_picks[strategy_key].append(ticket_key)
+        for pick in (event.get("exactaPicks") if isinstance(event.get("exactaPicks"), list) else []):
+            if not isinstance(pick, dict):
+                continue
+            ticket_key = normalize_ticket(pick.get("ticket"))
+            if len(ticket_key.split("-")) == 2:
+                strategy_picks["nirentan"].append(ticket_key)
+
+        for key, tickets in strategy_picks.items():
+            unique_tickets = list(dict.fromkeys(ticket for ticket in tickets if ticket))
+            if not unique_tickets:
+                continue
+            summary[key]["points"] = max(summary[key]["points"], len(unique_tickets))
+            payout = payout2t if key == "nirentan" else payout3t
+            result_for_type = result2t_key if key == "nirentan" else result_key
+            if key == "nirentan" and not payout:
+                continue
+            summary[key]["available"] = True
+            summary[key]["races"] += 1
+            internal[key]["stake"] += len(unique_tickets) * 100
+            hit = result_for_type in unique_tickets
+            if hit:
+                summary[key]["hitRaces"] += 1
+                internal[key]["return"] += payout
+                multiplier = payout_multiplier(payout)
+                if multiplier is not None:
+                    tier = "rainbow" if payout >= MANFUNE_YEN else "gold" if multiplier >= 50 else ""
+                    row["hits"].append({
+                        "group": key,
+                        "label": summary[key]["label"],
+                        "betType": summary[key]["betType"],
+                        "multiplier": multiplier,
+                        "tier": tier,
+                        "manfune": payout >= MANFUNE_YEN,
+                    })
+        rows.append(row)
+
+    for key, item in summary.items():
+        races = item["races"]
+        stake = internal[key]["stake"]
+        returned = internal[key]["return"]
+        item["hitRate"] = round(item["hitRaces"] / races * 100) if races else 0
+        item["roi"] = round(returned / stake * 100) if stake else 0
+        if key == "nirentan" and not races:
+            item["available"] = False
+    return {
+        "date": date,
+        "jcd": jcd,
+        "venue": venue,
+        "races": rows,
+        "summary": summary,
+        "note": "保存済みの予測ログだけで集計しています。当選時は払戻を倍率換算して表示します。",
+    }
 
 
 def get_admin_performance(date):
@@ -543,6 +715,60 @@ def build_server_prediction_picks(racers, signals):
     return picks
 
 
+def build_server_exacta_picks(trifecta_picks, racers):
+    picks = []
+    seen = set()
+    for pick in trifecta_picks:
+        ticket = pick.get("ticket") if isinstance(pick, dict) else []
+        if not isinstance(ticket, list) or len(ticket) < 2:
+            continue
+        exacta = [int(ticket[0]), int(ticket[1])]
+        key = tuple(exacta)
+        if key in seen:
+            continue
+        seen.add(key)
+        picks.append({
+            "ticket": exacta,
+            "probability": round(min(70, max(1, float(pick.get("probability") or 0) * 1.8)), 1),
+            "estimatedOdds": None,
+            "actualOdds": None,
+            "valueScore": round(float(pick.get("valueScore") or 0) * 0.92, 1),
+            "strategyKey": "exacta",
+            "strategyLabel": "2連単",
+            "strategyIndex": len(picks),
+        })
+        if len(picks) >= 3:
+            break
+    if len(picks) >= 3:
+        return picks
+    ordered = sorted(
+        [racer for racer in racers if racer.get("boat")],
+        key=lambda racer: (-(float(racer.get("national") or 0) + float(racer.get("local") or 0)), int(racer.get("boat") or 9)),
+    )
+    for first in ordered:
+        for second in ordered:
+            if first.get("boat") == second.get("boat"):
+                continue
+            exacta = [int(first["boat"]), int(second["boat"])]
+            key = tuple(exacta)
+            if key in seen:
+                continue
+            seen.add(key)
+            picks.append({
+                "ticket": exacta,
+                "probability": 0,
+                "estimatedOdds": None,
+                "actualOdds": None,
+                "valueScore": 0,
+                "strategyKey": "exacta",
+                "strategyLabel": "2連単",
+                "strategyIndex": len(picks),
+            })
+            if len(picks) >= 3:
+                return picks
+    return picks
+
+
 def build_admin_backfill_event(
     date,
     jcd,
@@ -583,18 +809,19 @@ def build_admin_backfill_event(
     picks = build_server_prediction_picks(racers, signals)
     if not picks:
         return None
+    exacta_picks = build_server_exacta_picks(picks, racers)
     venue = VENUE_NAMES[int(jcd) - 1]
     result = result_payload.get("result") or {}
     result_key = normalize_ticket(result.get("result"))
+    result2t_key = normalize_ticket((result.get("result") or [])[:2])
+    payout2t = extract_payout_value(result_payload.get("payouts"), "2連単", result2t_key)
     hit_index = next(
         (index for index, pick in enumerate(picks) if normalize_ticket(pick.get("ticket")) == result_key),
         -1,
     )
     exacta_hit = any(
-        len(pick.get("ticket") or []) >= 2
-        and pick["ticket"][0] == result["result"][0]
-        and pick["ticket"][1] == result["result"][1]
-        for pick in picks
+        normalize_ticket(pick.get("ticket")) == result2t_key
+        for pick in exacta_picks
     )
     leader_hit = any(
         pick.get("ticket") and pick["ticket"][0] == result["result"][0]
@@ -612,7 +839,10 @@ def build_admin_backfill_event(
         "race": race,
         "result": result["result"],
         "payout": result["payout"],
+        "payout2t": payout2t,
+        "payouts": result_payload.get("payouts") or [],
         "picks": picks,
+        "exactaPicks": exacta_picks,
         "racers": racers,
         "odds3t": odds3t,
         "betDecision": bet_decision,
@@ -2304,6 +2534,13 @@ class AppHandler(SimpleHTTPRequestHandler):
             if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
                 return self.send_json({"error": "invalid parameters"}, 400)
             return self.send_json(get_admin_performance(date))
+        if parsed.path == "/api/result-board":
+            query = parse_qs(parsed.query)
+            date = query.get("date", [""])[0]
+            jcd = query.get("jcd", [""])[0].zfill(2)
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) or not re.fullmatch(r"\d{2}", jcd):
+                return self.send_json({"error": "invalid parameters"}, 400)
+            return self.send_json(build_result_board(date, jcd))
         if parsed.path not in ("/api/program", "/api/result", "/api/results", "/api/signals", "/api/venues"):
             return super().do_GET()
         query = parse_qs(parsed.query)
