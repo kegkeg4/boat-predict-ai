@@ -698,6 +698,9 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .korogashi-ticket .table-boat { width: 38px; height: 38px; font-size: 16px; }
 .korogashi-ticket i { color: #9aa8b6; font-style: normal; font-weight: 900; }
 .korogashi-ticket em { color: #9aa8b6; font-style: normal; font-weight: 900; }
+.korogashi-month-result { display: grid; gap: 6px; justify-items: end; }
+.korogashi-month-result strong { color: #0a9a70; font-size: clamp(24px, 3vw, 34px); line-height: 1; letter-spacing: -.04em; }
+.korogashi-month-result span { color: #7b8a99; font-size: 10px; font-weight: 900; }
 .korogashi-exacta { display: flex; align-items: center; gap: 5px; padding: 5px; border: 1px solid #e1e9f2; border-radius: 9px; background: #f7faff; }
 .korogashi-exacta.matched { border-color: #8a63d2; background: #f2edff; box-shadow: 0 0 0 2px rgba(138, 99, 210, .08); }
 .korogashi-game-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 9px; }
@@ -706,6 +709,11 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .korogashi-game-stats b { color: #1b2d42; font-size: 14px; word-break: keep-all; }
 .korogashi-game-stats .plus b { color: #0a9a70; }
 .korogashi-game-stats .minus b { color: #cf4053; }
+.korogashi-month-days { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.korogashi-month-days article { min-width: 0; padding: 13px; border: 1px solid #e3ebf3; border-radius: 12px; background: #fff; }
+.korogashi-month-days small { display: block; color: #8b99a8; font-size: 8px; font-weight: 900; letter-spacing: .08em; }
+.korogashi-month-days b { display: block; margin-top: 6px; color: #14263b; font-size: 14px; }
+.korogashi-month-days span { display: block; margin-top: 6px; color: #6f7f90; font-size: 10px; line-height: 1.5; }
 .korogashi-jump { justify-self: start; padding: 10px 14px; border: 0; border-radius: 9px; color: #fff; background: #0877f9; font-size: 11px; font-weight: 900; cursor: pointer; }
 .korogashi-jump:hover { background: #006ee8; }
 
@@ -908,6 +916,8 @@ footer { display: flex; justify-content: space-between; padding: 22px 3px 0; col
   .strategy-profit-grid { grid-template-columns: 1fr; }
   .korogashi-game { padding: 19px 15px; }
   .korogashi-ticket .table-boat { width: 32px; height: 32px; font-size: 13px; }
+  .korogashi-month-result { justify-items: start; }
   .korogashi-game-stats { grid-template-columns: 1fr; }
+  .korogashi-month-days { grid-template-columns: 1fr; }
   .value-legend span { display: none; }
 }

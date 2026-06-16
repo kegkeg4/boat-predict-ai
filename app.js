@@ -248,6 +248,7 @@ let selectedResultRefreshInFlight = false;
 let performanceRenderTimer = null;
 let performanceCache = { key: "", totals: null };
 let resultBoardRequestId = 0;
+let korogashiMonthRequestId = 0;
 let predictionByRaceCache = {};
 let isPremiumMode = localStorage.getItem(PLAN_MODE_KEY) === "premium";
 let venueStatusByDate = loadStoredVenueStatus();
@@ -2383,62 +2384,76 @@ function getKorogashiGameCandidate(totals = getDailyPerformanceTotals()) {
   return candidates.sort((a, b) => b.confidence - a.confidence)[0] || null;
 }
 
-function renderKorogashiGame(totals = getDailyPerformanceTotals()) {
+function renderKorogashiGame(payload) {
   const badge = document.querySelector("#korogashiGameBadge");
   const content = document.querySelector("#korogashiGameContent");
   if (!badge || !content) return;
-  const candidate = getKorogashiGameCandidate(totals);
-  if (!candidate) {
-    badge.textContent = "候補なし";
-    content.innerHTML = `<p class="performance-empty">公式出走表を取得できると、コロガシ候補を表示します。</p>`;
+  if (!payload || !payload.summary || !payload.summary.days) {
+    badge.textContent = "未集計";
+    badge.className = "watch";
+    content.innerHTML = `<p class="performance-empty">2連単予測と確定結果が保存されると、月間コロガシ収支を表示します。</p>`;
     return;
   }
-  const { row, pick, exactaPicks, decision } = candidate;
-  const ticketText = exactaPicks.map((item) => renderTicketText(item.ticket)).join(" / ");
-  const exactaResult = row.official ? row.official.result.slice(0, 2) : [];
-  const hitPick = row.official ? exactaPicks.find((item) => item.ticket.join("-") === exactaResult.join("-")) : null;
-  const hit = Boolean(hitPick);
-  const finished = Boolean(row.official);
-  const exactaPayout = hitPick ? getOfficialPayout(row.official, "2連単", hitPick.ticket) : 0;
-  const balance = hit ? 700 + exactaPayout : finished ? 700 : 1000;
-  const resultLabel = finished
-    ? hit ? `的中 ${formatYen(balance)}へ` : "不的中 残700円"
-    : "レース前";
-  badge.textContent = decision.buy ? "勝負候補" : "様子見候補";
-  badge.className = decision.buy ? "buy" : "watch";
+  const { summary } = payload;
+  const latestDay = payload.daily[payload.daily.length - 1];
+  const bestDay = summary.bestDay;
+  const latestHistory = latestDay?.history || [];
+  const netClass = summary.net >= 0 ? "plus" : "minus";
+  badge.textContent = `${payload.month} 月間`;
+  badge.className = netClass === "plus" ? "buy" : "watch";
   content.innerHTML = `
-    <article class="korogashi-main ${finished ? hit ? "hit" : "miss" : "waiting"}">
+    <article class="korogashi-main ${netClass}">
       <div>
-        <small>${venues[Number(venueSelect.value)].name}で一番自信あり</small>
-        <h3>${row.race}R 2連単3点</h3>
-        <p>${decision.label}。2連単3点を各100円で買い、的中した払戻を次に転がす候補です。</p>
+        <small>${payload.venue} 月間コロガシ</small>
+        <h3>${formatSignedYen(summary.net)}</h3>
+        <p>各日1,000円スタート。的中したら残高を次レースへ全額コロガシ、外れた日は0円で終了します。</p>
       </div>
-      <div class="korogashi-ticket">
-        ${exactaPicks.map((item, pickIndex) => `
-          <span class="korogashi-exacta ${hitPick && hitPick.ticket.join("-") === item.ticket.join("-") ? "matched" : ""}">
-            ${item.ticket.map((boat, index) => `${index ? "<i>›</i>" : ""}${boatBadge(boat, true)}`).join("")}
-          </span>
-          ${pickIndex < exactaPicks.length - 1 ? "<em>/</em>" : ""}
-        `).join("")}
+      <div class="korogashi-ticket korogashi-month-result">
+        <strong>${formatYen(summary.returnTotal)}</strong>
+        <span>総スタート ${formatYen(summary.startTotal)}</span>
       </div>
     </article>
     <div class="korogashi-game-stats">
-      <span><small>スタート</small><b>1,000円</b></span>
-      <span><small>買い方</small><b>2連単3点×100円</b></span>
-      <span><small>買い目</small><b>${ticketText}</b></span>
-      <span><small>最高AI確率</small><b>${pick.probability.toFixed(2)}%</b></span>
-      <span class="${finished ? hit ? "plus" : "minus" : ""}"><small>ゲーム結果</small><b>${resultLabel}</b></span>
+      <span><small>集計日数</small><b>${summary.days}日</b></span>
+      <span><small>勝負回数</small><b>${summary.bets}回</b></span>
+      <span><small>的中率</small><b>${summary.hitRate}%</b></span>
+      <span><small>最高連勝</small><b>${summary.maxStreak}連勝</b></span>
+      <span class="${netClass}"><small>月間収支</small><b>${formatSignedYen(summary.net)}</b></span>
     </div>
-    <button class="korogashi-jump" type="button" data-korogashi-race="${row.race}">${row.race}Rの予測を見る</button>
+    <div class="korogashi-month-days">
+      <article>
+        <small>ベスト日</small>
+        <b>${bestDay ? `${bestDay.date} / ${formatYen(bestDay.end)}` : "なし"}</b>
+        <span>${bestDay ? `${bestDay.maxStreak}連勝・収支${formatSignedYen(bestDay.net)}` : "まだ集計できません"}</span>
+      </article>
+      <article>
+        <small>直近日</small>
+        <b>${latestDay ? `${latestDay.date} / ${formatSignedYen(latestDay.net)}` : "なし"}</b>
+        <span>${latestHistory.length ? latestHistory.map((item) => `${item.race}R ${item.hit ? "的中" : "終了"} ${item.after.toLocaleString("ja-JP")}円`).join(" / ") : "履歴なし"}</span>
+      </article>
+    </div>
   `;
-  const jumpButton = content.querySelector("[data-korogashi-race]");
-  jumpButton?.addEventListener("click", () => {
-    selectedRace = Number(jumpButton.dataset.korogashiRace);
-    updateRaceButtonStates();
-    updateActionButton();
-    runPrediction(true);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  });
+}
+
+async function loadKorogashiMonth() {
+  const badge = document.querySelector("#korogashiGameBadge");
+  if (!badge || !dateInput.value || !venueSelect.value) return;
+  const requestId = ++korogashiMonthRequestId;
+  const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
+  badge.textContent = "集計中";
+  try {
+    const response = await fetchWithTimeout(
+      `/api/korogashi-month?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}`,
+      { timeoutMs: 5000 }
+    );
+    const payload = await response.json();
+    if (requestId !== korogashiMonthRequestId) return;
+    renderKorogashiGame(payload);
+  } catch (error) {
+    if (requestId !== korogashiMonthRequestId) return;
+    badge.textContent = "取得失敗";
+    renderKorogashiGame(null);
+  }
 }
 
 function renderTicketText(ticket) {
@@ -2756,8 +2771,16 @@ function renderDailyPerformance(options = {}) {
     `対象は${formatDate(dateInput.value)} ${venues[Number(venueSelect.value)].name}。3連単は本命5点・狙い目1点・穴1点の合計7点で集計します。`;
   document.querySelector("#simulatedProfitNote").textContent =
     `判定済み${totals.judged}レースで、本命だけは5点、狙い目だけ・穴だけは各1点を${PERFORMANCE_BET_UNIT_YEN}円ずつ購入した場合の仮想収支です。払戻は公式3連単の100円あたり払戻で計算しています。`;
-  renderKorogashiGame(totals);
-  saveLearningLog(totals.rows).then(() => loadResultBoard()).catch(() => loadResultBoard());
+  loadKorogashiMonth();
+  saveLearningLog(totals.rows)
+    .then(() => {
+      loadResultBoard();
+      loadKorogashiMonth();
+    })
+    .catch(() => {
+      loadResultBoard();
+      loadKorogashiMonth();
+    });
   if (renderList) renderPerformanceRaceList(totals.rows);
 }
 

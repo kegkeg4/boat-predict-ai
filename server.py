@@ -448,6 +448,138 @@ def build_result_board(date, jcd):
     }
 
 
+def build_korogashi_month(date, jcd):
+    venue_index = int(jcd) - 1
+    venue = VENUE_NAMES[venue_index] if 0 <= venue_index < len(VENUE_NAMES) else jcd
+    month = date[:7]
+    store = read_learning_store()
+    events_by_day = {}
+    for event in (store.get("events") or {}).values():
+        if not isinstance(event, dict):
+            continue
+        event_date = str(event.get("date") or "")
+        if not event_date.startswith(month) or event.get("venue") != venue:
+            continue
+        try:
+            race_number = int(event.get("race") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not 1 <= race_number <= 12:
+            continue
+        exacta_picks = []
+        for pick in (event.get("exactaPicks") if isinstance(event.get("exactaPicks"), list) else []):
+            ticket_key = normalize_ticket(pick.get("ticket") if isinstance(pick, dict) else [])
+            if len(ticket_key.split("-")) == 2:
+                exacta_picks.append(ticket_key)
+        if not exacta_picks:
+            continue
+        result = event.get("result") if isinstance(event.get("result"), list) else []
+        result2t_key = normalize_ticket(result[:2])
+        payout2t = int(event.get("payout2t") or 0)
+        if not payout2t:
+            payout2t = extract_payout_value(event.get("payouts"), "2連単", result2t_key)
+        if not result2t_key or not payout2t:
+            continue
+        events_by_day.setdefault(event_date, []).append({
+            "race": race_number,
+            "tickets": list(dict.fromkeys(exacta_picks)),
+            "result": result2t_key,
+            "payout": payout2t,
+            "savedAt": event.get("savedAt") or "",
+        })
+
+    daily = []
+    total_start = 0
+    total_return = 0
+    total_bets = 0
+    total_hits = 0
+    max_balance = 0
+    max_streak = 0
+    best_day = None
+    for day in sorted(events_by_day):
+        races = sorted(events_by_day[day], key=lambda item: (item["race"], item["savedAt"]))
+        balance = 1000
+        started = False
+        stopped = False
+        streak = 0
+        max_day_streak = 0
+        history = []
+        for item in races:
+            if balance <= 0:
+                stopped = True
+                break
+            tickets = item["tickets"]
+            if not tickets:
+                continue
+            started = True
+            before = balance
+            stake_per_point = before / len(tickets)
+            hit = item["result"] in tickets
+            if hit:
+                balance = round(stake_per_point * (item["payout"] / 100))
+                streak += 1
+                total_hits += 1
+            else:
+                balance = 0
+                streak = 0
+                stopped = True
+            max_day_streak = max(max_day_streak, streak)
+            max_streak = max(max_streak, streak)
+            max_balance = max(max_balance, balance)
+            total_bets += 1
+            history.append({
+                "race": item["race"],
+                "tickets": tickets,
+                "result": item["result"],
+                "hit": hit,
+                "payout": item["payout"],
+                "multiplier": payout_multiplier(item["payout"]),
+                "before": round(before),
+                "after": round(balance),
+            })
+            if stopped:
+                break
+        if not started:
+            continue
+        total_start += 1000
+        total_return += balance
+        day_row = {
+            "date": day,
+            "start": 1000,
+            "end": round(balance),
+            "net": round(balance - 1000),
+            "bets": len(history),
+            "hits": sum(1 for item in history if item["hit"]),
+            "maxStreak": max_day_streak,
+            "stopped": stopped,
+            "history": history,
+        }
+        daily.append(day_row)
+        if best_day is None or day_row["end"] > best_day["end"]:
+            best_day = day_row
+
+    return {
+        "date": date,
+        "month": month,
+        "jcd": jcd,
+        "venue": venue,
+        "daily": daily,
+        "summary": {
+            "days": len(daily),
+            "startTotal": round(total_start),
+            "returnTotal": round(total_return),
+            "net": round(total_return - total_start),
+            "bets": total_bets,
+            "hits": total_hits,
+            "hitRate": round(total_hits / total_bets * 100) if total_bets else 0,
+            "maxBalance": round(max_balance),
+            "maxStreak": max_streak,
+            "bestDay": best_day,
+        },
+        "note": "各日1,000円スタート。2連単3点へ残高を均等配分し、的中時は払戻を次レースへ全額コロガシ。外れた日は0円で終了します。",
+    }
+
+
 def get_admin_performance(date):
     store = read_learning_store()
     events = [
@@ -2560,6 +2692,13 @@ class AppHandler(SimpleHTTPRequestHandler):
             if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) or not re.fullmatch(r"\d{2}", jcd):
                 return self.send_json({"error": "invalid parameters"}, 400)
             return self.send_json(build_result_board(date, jcd))
+        if parsed.path == "/api/korogashi-month":
+            query = parse_qs(parsed.query)
+            date = query.get("date", [""])[0]
+            jcd = query.get("jcd", [""])[0].zfill(2)
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) or not re.fullmatch(r"\d{2}", jcd):
+                return self.send_json({"error": "invalid parameters"}, 400)
+            return self.send_json(build_korogashi_month(date, jcd))
         if parsed.path not in ("/api/program", "/api/result", "/api/results", "/api/signals", "/api/venues"):
             return super().do_GET()
         query = parse_qs(parsed.query)
