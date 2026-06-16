@@ -890,6 +890,37 @@ def render_seo_day(origin, slug, date):
     return seo_page_shell(title, description, canonical, robots, body), 200
 
 
+SEO_VENUE_STATS_MIN_RACES = 10
+
+
+def seo_venue_stats(venue):
+    events = seo_latest_events()
+    lane = {i: 0 for i in range(1, 7)}
+    races = 0
+    manfune = 0
+    for (date, ev_venue, race), event in events.items():
+        if ev_venue != venue:
+            continue
+        result = event.get("result") or []
+        try:
+            payout = int(event.get("payout") or 0)
+        except (TypeError, ValueError):
+            payout = 0
+        if not result or payout <= 0:
+            continue
+        try:
+            winner = int(result[0])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not 1 <= winner <= 6:
+            continue
+        races += 1
+        lane[winner] += 1
+        if payout >= MANFUNE_YEN:
+            manfune += 1
+    return {"races": races, "lane": lane, "manfune": manfune}
+
+
 def render_seo_venue(origin, slug):
     jcd = SLUG_TO_JCD.get(slug)
     if not jcd:
@@ -910,6 +941,20 @@ def render_seo_venue(origin, slug):
   <h2>{seo_escape(venue)}競艇場の特徴</h2>
   <p>{seo_escape(feature)}</p>
 </section>""" if feature else ""
+    stats = seo_venue_stats(venue)
+    stats_card = ""
+    if stats["races"] >= SEO_VENUE_STATS_MIN_RACES:
+        lane_items = "".join(
+            f"<div class=\"item\"><small>{lane}号艇</small><b>{round(stats['lane'][lane] / stats['races'] * 100)}%</b></div>"
+            for lane in range(1, 7)
+        )
+        manfune_rate = round(stats["manfune"] / stats["races"] * 100, 1)
+        stats_card = f"""
+<section class="card">
+  <h2>{seo_escape(venue)}の枠別1着率（当サイト集計・{stats['races']}レース）</h2>
+  <p>保存済みの確定結果から集計した{seo_escape(venue)}の枠別1着率です。サンプル{stats['races']}レース、万舟率（払戻1万円以上）は{manfune_rate}%。</p>
+  <div class="grid">{lane_items}</div>
+</section>"""
     body = f"""
 <section class="hero">
   <p class="eyebrow">VENUE HUB</p>
@@ -917,6 +962,7 @@ def render_seo_venue(origin, slug):
   <p class="answer">{seo_escape(feature) or seo_escape(venue) + "のボートレース予想と結果検証ページです。"}</p>
 </section>
 {feature_card}
+{stats_card}
 <section class="card">
   <h2>{seo_escape(venue)}の直近開催日</h2>
   <ul>{date_links}</ul>
