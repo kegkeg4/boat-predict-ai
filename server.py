@@ -30,6 +30,7 @@ ADMIN_BACKFILL_WORKERS = int(os.environ.get("BOAT_ADMIN_BACKFILL_WORKERS", "4"))
 ADMIN_BACKFILL_RESULT_TIMEOUT = float(os.environ.get("BOAT_ADMIN_RESULT_TIMEOUT", "16"))
 ADMIN_BACKFILL_SIGNAL_TIMEOUT = float(os.environ.get("BOAT_ADMIN_SIGNAL_TIMEOUT", "2"))
 BACKGROUND_SYNC_INTERVAL_SECONDS = int(os.environ.get("BOAT_BACKGROUND_SYNC_INTERVAL", "1800"))
+PAY_WARM_INTERVAL_SECONDS = int(os.environ.get("BOAT_PAY_WARM_INTERVAL", "45"))
 SIGNALS_CACHE_SECONDS = int(os.environ.get("BOAT_SIGNALS_CACHE_SECONDS", "180"))
 PROGRAM_UNAVAILABLE_CACHE_SECONDS = int(os.environ.get("BOAT_PROGRAM_UNAVAILABLE_CACHE_SECONDS", "5"))
 CACHE_DIR = Path(os.environ.get("BOAT_DATA_DIR", Path(__file__).with_name(".official-cache")))
@@ -75,6 +76,8 @@ warmup_status = {
 }
 learning_lock = threading.Lock()
 admin_backfill_lock = threading.Lock()
+pay_refresh_lock = threading.Lock()
+pay_refreshing_dates = set()
 admin_backfill_status = {
     "active": False,
     "date": None,
@@ -813,6 +816,24 @@ def get_cached_result(date, jcd, race):
     return None
 
 
+def get_stored_result(date, jcd, race):
+    cache_key = f"{date}-{jcd}"
+    with results_cache_lock:
+        cached = results_cache.get(cache_key)
+    if not cached:
+        return None
+    return (cached.get("payload") or {}).get("results", {}).get(str(race))
+
+
+def get_stored_results_for_venue(date, jcd):
+    cache_key = f"{date}-{jcd}"
+    with results_cache_lock:
+        cached = results_cache.get(cache_key)
+    if not cached:
+        return {}
+    return dict((cached.get("payload") or {}).get("results", {}))
+
+
 def store_result_payload(date, jcd, race, payload):
     cache_key = f"{date}-{jcd}"
     with results_cache_lock:
@@ -1145,6 +1166,15 @@ def result_warmer_worker():
         time.sleep(BACKGROUND_SYNC_INTERVAL_SECONDS)
 
 
+def pay_warmer_worker():
+    while True:
+        try:
+            load_pay_results(current_jst_date(), timeout=min(FETCH_TIMEOUT_SECONDS, 8))
+        except Exception:
+            pass
+        time.sleep(max(20, PAY_WARM_INTERVAL_SECONDS))
+
+
 def background_data_sync_once():
     today = current_jst_date()
     for offset in (-1, 0, 1):
@@ -1193,6 +1223,11 @@ def schedule_background_data_sync():
 
 def schedule_result_warmer():
     thread = threading.Thread(target=result_warmer_worker, daemon=True)
+    thread.start()
+
+
+def schedule_pay_warmer():
+    thread = threading.Thread(target=pay_warmer_worker, daemon=True)
     thread.start()
 
 
@@ -1513,12 +1548,50 @@ def load_pay_results(date, timeout=FETCH_TIMEOUT_SECONDS):
     return parsed
 
 
+def schedule_pay_refresh(date):
+    if date > current_jst_date():
+        return
+    with pay_refresh_lock:
+        if date in pay_refreshing_dates:
+            return
+        pay_refreshing_dates.add(date)
+
+    def worker():
+        try:
+            load_pay_results(date, timeout=min(FETCH_TIMEOUT_SECONDS, 8))
+        except Exception:
+            pass
+        finally:
+            with pay_refresh_lock:
+                pay_refreshing_dates.discard(date)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def get_cached_pay_results(date):
+    grouped = {}
+    with results_cache_lock:
+        snapshot = dict(results_cache)
+    prefix = f"{date}-"
+    for cache_key, cached in snapshot.items():
+        if not cache_key.startswith(prefix):
+            continue
+        jcd = cache_key.split("-", 3)[-1]
+        race_map = {}
+        for race_text, payload in ((cached.get("payload") or {}).get("results") or {}).items():
+            if isinstance(payload, dict) and payload.get("available"):
+                race_map[int(race_text)] = payload
+        if race_map:
+            grouped[jcd] = race_map
+    return grouped
+
+
 def merge_pay_venue_status(date, venues_status):
     if date > current_jst_date():
         return venues_status
-    try:
-        pay_results = load_pay_results(date, timeout=min(FETCH_TIMEOUT_SECONDS, 8))
-    except Exception:
+    pay_results = get_cached_pay_results(date)
+    if not pay_results:
+        schedule_pay_refresh(date)
         return venues_status
     merged = dict(venues_status or {})
     for jcd, race_map in pay_results.items():
@@ -1535,7 +1608,13 @@ def merge_pay_venue_status(date, venues_status):
     return merged
 
 
-def get_pay_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
+def get_pay_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS, allow_live=True):
+    cached = get_stored_result(date, jcd, race)
+    if cached and cached.get("available"):
+        return cached
+    if not allow_live:
+        schedule_pay_refresh(date)
+        return None
     try:
         return (load_pay_results(date, timeout=timeout).get(jcd) or {}).get(race)
     except Exception:
@@ -1978,14 +2057,17 @@ def normalize_race_list(races):
 def load_results(date, jcd, races=None, max_workers=6, timeout=FETCH_TIMEOUT_SECONDS):
     target_races = normalize_race_list(races)
     cache_key = f"{date}-{jcd}"
-    try:
-        pay_results = load_pay_results(date, timeout=min(timeout, 12)).get(jcd, {})
-    except Exception:
-        pay_results = {}
-    for race in target_races:
-        payload = pay_results.get(race)
-        if payload:
-            store_result_payload(date, jcd, race, payload)
+    if date <= current_jst_date():
+        schedule_pay_refresh(date)
+    else:
+        try:
+            pay_results = load_pay_results(date, timeout=min(timeout, 12)).get(jcd, {})
+        except Exception:
+            pay_results = {}
+        for race in target_races:
+            payload = pay_results.get(race)
+            if payload:
+                store_result_payload(date, jcd, race, payload)
     with results_cache_lock:
         cached = results_cache.get(cache_key)
         if cached:
@@ -2005,6 +2087,31 @@ def load_results(date, jcd, races=None, max_workers=6, timeout=FETCH_TIMEOUT_SEC
             results = dict(cached_results)
         else:
             results = {}
+    if date == current_jst_date():
+        missing = [
+            race for race in target_races
+            if str(race) not in results
+        ]
+        for race in missing:
+            results[str(race)] = {
+                "date": date,
+                "jcd": jcd,
+                "race": race,
+                "available": False,
+                "result": None,
+                "weather": {"available": False},
+                "source": "pending-pay-refresh",
+            }
+        return {
+            "date": date,
+            "jcd": jcd,
+            "results": {
+                str(race): results[str(race)]
+                for race in target_races
+                if str(race) in results
+            },
+            "staleWhileRevalidate": True,
+        }
     missing_races = [
         race for race in target_races
         if str(race) not in results
@@ -2285,6 +2392,8 @@ if __name__ == "__main__":
         schedule_startup_warmup()
     if os.environ.get("BOAT_RESULT_WARMER", "1") != "0":
         schedule_background_data_sync()
+    if os.environ.get("BOAT_PAY_WARMER", "1") != "0":
+        schedule_pay_warmer()
     if os.environ.get("BOAT_AUTO_BACKFILL", "1") != "0":
         schedule_admin_auto_backfill()
     try:

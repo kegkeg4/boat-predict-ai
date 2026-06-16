@@ -18,6 +18,10 @@ services:
         value: "1"
       - key: BOAT_RESULT_WARMER
         value: "1"
+      - key: BOAT_PAY_WARMER
+        value: "1"
+      - key: BOAT_PAY_WARM_INTERVAL
+        value: "45"
       - key: BOAT_BACKGROUND_SYNC_INTERVAL
         value: "900"
       - key: BOAT_SIGNALS_CACHE_SECONDS
