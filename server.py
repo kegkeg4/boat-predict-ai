@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+from html import escape
 import json
 import hashlib
 import os
@@ -587,6 +588,387 @@ def build_korogashi_month(date, jcd):
         },
         "note": "各日1,000円スタート。2連単3点へ残高を均等配分し、的中時は払戻を次レースへ全額コロガシ。外れた日は0円で終了します。",
     }
+
+
+VENUE_SLUGS = [
+    "kiryu", "toda", "edogawa", "heiwajima", "tamagawa", "hamanako",
+    "gamagori", "tokoname", "tsu", "mikuni", "biwako", "suminoe",
+    "amagasaki", "naruto", "marugame", "kojima", "miyajima", "tokuyama",
+    "shimonoseki", "wakamatsu", "ashiya", "fukuoka", "karatsu", "omura",
+]
+SLUG_TO_JCD = {
+    slug: f"{index + 1:02d}"
+    for index, slug in enumerate(VENUE_SLUGS)
+}
+JCD_TO_SLUG = {
+    f"{index + 1:02d}": slug
+    for index, slug in enumerate(VENUE_SLUGS)
+}
+SEO_SITEMAP_CACHE = {"savedAt": 0, "body": ""}
+
+
+def venue_name_from_jcd(jcd):
+    try:
+        index = int(jcd) - 1
+    except (TypeError, ValueError):
+        return str(jcd or "")
+    return VENUE_NAMES[index] if 0 <= index < len(VENUE_NAMES) else str(jcd or "")
+
+
+def seo_public_origin(handler):
+    configured = os.environ.get("BOAT_PUBLIC_ORIGIN", "").rstrip("/")
+    if configured:
+        return configured
+    host = handler.headers.get("Host", "localhost:4174")
+    scheme = "https" if "onrender.com" in host or os.environ.get("RENDER") else "http"
+    return f"{scheme}://{host}"
+
+
+def seo_escape(value):
+    return escape(str(value or ""), quote=True)
+
+
+def seo_ticket_text(ticket):
+    if isinstance(ticket, str):
+        return ticket
+    if isinstance(ticket, list):
+        return "-".join(str(int(value)) for value in ticket if isinstance(value, (int, float)))
+    return ""
+
+
+def seo_latest_events():
+    store = read_learning_store()
+    latest = {}
+    for event in (store.get("events") or {}).values():
+        if not isinstance(event, dict):
+            continue
+        date = event.get("date")
+        venue = event.get("venue")
+        race = event.get("race")
+        if not date or not venue or not race:
+            continue
+        try:
+            race_number = int(race)
+        except (TypeError, ValueError):
+            continue
+        if not 1 <= race_number <= 12:
+            continue
+        key = (date, venue, race_number)
+        current = latest.get(key)
+        if not current or str(current.get("savedAt") or "") <= str(event.get("savedAt") or ""):
+            latest[key] = event
+    return latest
+
+
+def seo_event_for(date, venue, race):
+    return seo_latest_events().get((date, venue, int(race)))
+
+
+def seo_events_for_day(date, venue):
+    events = seo_latest_events()
+    return {
+        race: event
+        for (event_date, event_venue, race), event in events.items()
+        if event_date == date and event_venue == venue
+    }
+
+
+def seo_dates_for_venue(venue, limit=30):
+    dates = sorted(
+        {
+            date
+            for (date, event_venue, _race), _event in seo_latest_events().items()
+            if event_venue == venue
+        },
+        reverse=True,
+    )
+    return dates[:limit]
+
+
+def seo_event_has_content(event):
+    if not isinstance(event, dict):
+        return False
+    return bool(event.get("result") or event.get("picks") or event.get("exactaPicks"))
+
+
+def seo_prediction_summary(event):
+    picks = event.get("picks") if isinstance(event.get("picks"), list) else []
+    exacta_picks = event.get("exactaPicks") if isinstance(event.get("exactaPicks"), list) else []
+    groups = []
+    for key, label in (("honmei", "本命3連単"), ("nerai", "狙い目3連単"), ("ana", "穴3連単")):
+        tickets = [
+            normalize_ticket(pick.get("ticket"))
+            for pick in picks
+            if isinstance(pick, dict) and pick.get("strategyKey") == key
+        ]
+        tickets = [ticket for ticket in tickets if ticket]
+        if tickets:
+            groups.append((label, tickets))
+    exacta_tickets = [
+        normalize_ticket(pick.get("ticket"))
+        for pick in exacta_picks
+        if isinstance(pick, dict)
+    ]
+    exacta_tickets = [ticket for ticket in exacta_tickets if ticket]
+    if exacta_tickets:
+        groups.append(("2連単3点", exacta_tickets))
+    return groups
+
+
+def seo_result_text(event):
+    result_key = normalize_ticket(event.get("result"))
+    if not result_key:
+        return "結果待ち"
+    multiplier = payout_multiplier(event.get("payout"))
+    if multiplier is None:
+        return result_key
+    return f"{result_key} / ×{multiplier:.1f}"
+
+
+def seo_page_shell(title, description, canonical, robots, body):
+    safe_title = seo_escape(title)
+    safe_description = seo_escape(description)
+    safe_canonical = seo_escape(canonical)
+    return f"""<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title}</title>
+  <meta name="description" content="{safe_description}">
+  <meta name="robots" content="{seo_escape(robots)}">
+  <link rel="canonical" href="{safe_canonical}">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="{safe_title}">
+  <meta property="og:description" content="{safe_description}">
+  <meta property="og:url" content="{safe_canonical}">
+  <style>
+    body{{margin:0;background:#f4f7fb;color:#13243a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.75}}
+    .wrap{{max-width:980px;margin:0 auto;padding:28px 18px 46px}}
+    .hero,.card{{background:#fff;border:1px solid #dfe8f2;border-radius:18px;padding:22px;margin:16px 0;box-shadow:0 14px 34px rgba(19,36,58,.06)}}
+    .eyebrow{{color:#7f8fa3;font-size:12px;font-weight:900;letter-spacing:.16em;text-transform:uppercase}}
+    h1{{font-size:clamp(28px,4vw,44px);line-height:1.18;margin:8px 0 12px;letter-spacing:-.04em}}
+    h2{{font-size:22px;margin:0 0 12px}}
+    a{{color:#0877f9;text-decoration:none;font-weight:800}}
+    .answer{{font-size:18px;font-weight:800;background:#edf6ff;border-radius:14px;padding:16px}}
+    .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}}
+    .item{{border:1px solid #e3ebf3;border-radius:14px;padding:14px;background:#fbfdff}}
+    .item small{{display:block;color:#8392a4;font-weight:900;font-size:11px;letter-spacing:.08em}}
+    .item b{{display:block;margin-top:5px;font-size:20px}}
+    ul{{padding-left:20px}}
+    li{{margin:6px 0}}
+    footer{{margin-top:26px;color:#6e7f92;font-size:13px}}
+  </style>
+</head>
+<body>
+  <main class="wrap">{body}</main>
+</body>
+</html>"""
+
+
+def render_seo_race(origin, slug, date, race):
+    jcd = SLUG_TO_JCD.get(slug)
+    if not jcd or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date or ""):
+        return None, 404
+    try:
+        race_number = int(race)
+    except (TypeError, ValueError):
+        return None, 404
+    if not 1 <= race_number <= 12:
+        return None, 404
+    venue = venue_name_from_jcd(jcd)
+    event = seo_event_for(date, venue, race_number)
+    has_content = seo_event_has_content(event)
+    robots = "index,follow" if has_content else "noindex,follow"
+    canonical = f"{origin}/boatrace/{slug}/{date}/{race_number}"
+    title = f"{venue} {race_number}R 予想・結果 {date}｜競艇AI予測"
+    if not has_content:
+        description = f"{date} {venue}{race_number}Rの競艇AI予測ページです。保存済み予測または確定結果が入り次第、内容を表示します。"
+        body = f"""
+<section class="hero">
+  <p class="eyebrow">BOATRACE AI PREDICTION</p>
+  <h1>{seo_escape(venue)} {race_number}R 予想・結果</h1>
+  <p class="answer">このページはまだ保存済み予測または確定結果がありません。検索向けには noindex で公開しています。</p>
+</section>
+{seo_internal_links(slug, date, race_number)}
+{seo_footer()}"""
+        return seo_page_shell(title, description, canonical, robots, body), 200
+
+    result_text = seo_result_text(event)
+    hit_text = "的中判定あり" if event.get("hitIndex", -1) >= 0 or event.get("exactaHit") else "的中なし"
+    description = f"{date} {venue}{race_number}Rの競艇AI予測と確定結果。結果は{result_text}、判定は{hit_text}。"
+    prediction_groups = seo_prediction_summary(event)
+    prediction_html = "".join(
+        f"<div class=\"item\"><small>{seo_escape(label)}</small><b>{seo_escape(' / '.join(tickets))}</b></div>"
+        for label, tickets in prediction_groups
+    ) or "<p>保存済み買い目はありません。</p>"
+    result_html = f"""
+<div class="grid">
+  <div class="item"><small>確定結果</small><b>{seo_escape(result_text)}</b></div>
+  <div class="item"><small>的中判定</small><b>{seo_escape(hit_text)}</b></div>
+  <div class="item"><small>2連単</small><b>{seo_escape(normalize_ticket((event.get('result') or [])[:2]) or '結果待ち')}</b></div>
+</div>"""
+    answer = f"{date} {venue}{race_number}Rの競艇AI予測です。確定結果は{result_text}、AI予測の判定は{hit_text}です。"
+    body = f"""
+<section class="hero">
+  <p class="eyebrow">BOATRACE AI PREDICTION</p>
+  <h1>{seo_escape(venue)} {race_number}R 予想・結果</h1>
+  <p class="answer">{seo_escape(answer)}</p>
+</section>
+<section class="card">
+  <h2>予測買い目</h2>
+  <div class="grid">{prediction_html}</div>
+</section>
+<section class="card">
+  <h2>確定結果と予測比較</h2>
+  {result_html}
+</section>
+{seo_internal_links(slug, date, race_number)}
+{seo_footer()}"""
+    return seo_page_shell(title, description, canonical, robots, body), 200
+
+
+def render_seo_day(origin, slug, date):
+    jcd = SLUG_TO_JCD.get(slug)
+    if not jcd or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date or ""):
+        return None, 404
+    venue = venue_name_from_jcd(jcd)
+    events = seo_events_for_day(date, venue)
+    has_content = bool(events)
+    robots = "index,follow" if has_content else "noindex,follow"
+    canonical = f"{origin}/boatrace/{slug}/{date}/"
+    title = f"{venue} 予想・結果一覧 {date}｜競艇AI予測"
+    description = f"{date} {venue}の競艇AI予測と確定結果一覧。12レースの的中判定、回収率、当選倍率を確認できます。"
+    race_links = []
+    for race in range(1, 13):
+        event = events.get(race)
+        result = seo_result_text(event) if event else "保存データなし"
+        race_links.append(
+            f"<li><a href=\"/boatrace/{slug}/{date}/{race}\">{race}R 予想・結果</a> - {seo_escape(result)}</li>"
+        )
+    board = build_result_board(date, jcd)
+    summary_html = "".join(
+        f"<div class=\"item\"><small>{seo_escape(item.get('label'))}</small><b>回収率 {int(item.get('roi') or 0)}%</b></div>"
+        for item in (board.get("summary") or {}).values()
+    )
+    body = f"""
+<section class="hero">
+  <p class="eyebrow">DAILY BOATRACE AI</p>
+  <h1>{seo_escape(venue)} {seo_escape(date)} 予想・結果一覧</h1>
+  <p class="answer">{seo_escape(date)}の{seo_escape(venue)}競艇AI予測一覧です。保存済みの予測と確定結果があるレースだけを検索対象にしています。</p>
+</section>
+<section class="card"><h2>的中率・回収率サマリー</h2><div class="grid">{summary_html}</div></section>
+<section class="card"><h2>12レース一覧</h2><ul>{''.join(race_links)}</ul></section>
+{seo_internal_links(slug, date, None)}
+{seo_footer()}"""
+    return seo_page_shell(title, description, canonical, robots, body), 200
+
+
+def render_seo_venue(origin, slug):
+    jcd = SLUG_TO_JCD.get(slug)
+    if not jcd:
+        return None, 404
+    venue = venue_name_from_jcd(jcd)
+    dates = seo_dates_for_venue(venue)
+    robots = "index,follow" if dates else "noindex,follow"
+    canonical = f"{origin}/boatrace/{slug}/"
+    title = f"{venue} 競艇AI予測｜ボートレース予想と結果検証"
+    description = f"{venue}の競艇AI予測ハブ。直近開催日の予測、確定結果、回収率を保存済みデータから確認できます。"
+    date_links = "".join(
+        f"<li><a href=\"/boatrace/{slug}/{date}/\">{seo_escape(date)} {seo_escape(venue)} 予想・結果一覧</a></li>"
+        for date in dates
+    ) or "<li>保存済みデータはまだありません。</li>"
+    body = f"""
+<section class="hero">
+  <p class="eyebrow">VENUE HUB</p>
+  <h1>{seo_escape(venue)} 競艇AI予測</h1>
+  <p class="answer">{seo_escape(venue)}のボートレース予想と結果検証ページです。保存済みの予測・確定結果をもとに、ロングテール検索で読める形にしています。</p>
+</section>
+<section class="card">
+  <h2>{seo_escape(venue)}の直近開催日</h2>
+  <ul>{date_links}</ul>
+</section>
+<section class="card">
+  <h2>予測方法</h2>
+  <p>出走表、モーター、スタート、展示、気象、会場傾向、過去結果の学習ログをもとにAI予測を表示します。的中を保証するものではなく、検証可能な予測ログとして公開しています。</p>
+</section>
+{seo_footer()}"""
+    return seo_page_shell(title, description, canonical, robots, body), 200
+
+
+def seo_internal_links(slug, date, race):
+    links = [f"<a href=\"/boatrace/{slug}/\">会場ページ</a>"]
+    if date:
+        links.append(f"<a href=\"/boatrace/{slug}/{date}/\">同日の12レース一覧</a>")
+    if race:
+        if race > 1:
+            links.append(f"<a href=\"/boatrace/{slug}/{date}/{race - 1}\">前のレース</a>")
+        if race < 12:
+            links.append(f"<a href=\"/boatrace/{slug}/{date}/{race + 1}\">次のレース</a>")
+    links.append("<a href=\"/\">インタラクティブ版を見る</a>")
+    return f"<nav class=\"card\"><h2>関連リンク</h2><p>{' / '.join(links)}</p></nav>"
+
+
+def seo_footer():
+    return """
+<footer>
+  <p>BOAT PREDICT AI は競艇・ボートレースの予測と検証を目的とした情報サイトです。予測は的中を保証するものではありません。</p>
+  <p>20歳未満の方は舟券を購入できません。投票は余裕資金の範囲で行い、のめり込みにご注意ください。</p>
+</footer>"""
+
+
+def render_seo_page(origin, slug, date=None, race=None):
+    if slug not in SLUG_TO_JCD:
+        return None, 404
+    if date and race:
+        return render_seo_race(origin, slug, date, race)
+    if date:
+        return render_seo_day(origin, slug, date)
+    return render_seo_venue(origin, slug)
+
+
+def build_sitemap_xml(origin, max_days=60):
+    now = time.time()
+    if SEO_SITEMAP_CACHE["body"] and now - SEO_SITEMAP_CACHE["savedAt"] < 600:
+        return SEO_SITEMAP_CACHE["body"]
+    events = seo_latest_events()
+    rows = []
+    day_keys = set()
+    venue_slugs = set()
+    cutoff = datetime.now(JST).date() - timedelta(days=max_days)
+    for (date, venue, race), event in events.items():
+        if not seo_event_has_content(event):
+            continue
+        try:
+            if datetime.strptime(date, "%Y-%m-%d").date() < cutoff:
+                continue
+        except ValueError:
+            continue
+        if venue not in VENUE_NAMES:
+            continue
+        jcd = f"{VENUE_NAMES.index(venue) + 1:02d}"
+        slug = JCD_TO_SLUG.get(jcd)
+        if not slug:
+            continue
+        lastmod = (event.get("savedAt") or date)[:10]
+        rows.append((f"{origin}/boatrace/{slug}/{date}/{race}", lastmod))
+        day_keys.add((slug, date, lastmod))
+        venue_slugs.add(slug)
+    for slug, date, lastmod in sorted(day_keys):
+        rows.append((f"{origin}/boatrace/{slug}/{date}/", lastmod))
+    for slug in sorted(venue_slugs):
+        rows.append((f"{origin}/boatrace/{slug}/", datetime.now(JST).strftime("%Y-%m-%d")))
+    body = "\n".join(
+        f"  <url><loc>{seo_escape(loc)}</loc><lastmod>{seo_escape(lastmod)}</lastmod></url>"
+        for loc, lastmod in sorted(set(rows))
+    )
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+{body}
+</urlset>
+"""
+    SEO_SITEMAP_CACHE.update({"savedAt": now, "body": xml})
+    return xml
 
 
 def get_admin_performance(date):
@@ -2708,6 +3090,33 @@ class AppHandler(SimpleHTTPRequestHandler):
             if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) or not re.fullmatch(r"\d{2}", jcd):
                 return self.send_json({"error": "invalid parameters"}, 400)
             return self.send_json(build_korogashi_month(date, jcd))
+        if parsed.path == "/sitemap.xml":
+            return self.send_xml(build_sitemap_xml(seo_public_origin(self)))
+        if parsed.path == "/robots.txt":
+            origin = seo_public_origin(self)
+            return self.send_text(
+                "User-agent: *\n"
+                "Allow: /\n"
+                "Disallow: /api/\n"
+                "Disallow: /admin\n"
+                f"Sitemap: {origin}/sitemap.xml\n",
+                content_type="text/plain; charset=utf-8",
+                cache_control="public, max-age=600",
+            )
+        seo_match = re.fullmatch(
+            r"/boatrace/([a-z]+)(?:/(\d{4}-\d{2}-\d{2})(?:/(\d{1,2})/?)?)?/?",
+            parsed.path,
+        )
+        if seo_match:
+            html_text, status = render_seo_page(
+                seo_public_origin(self),
+                seo_match.group(1),
+                seo_match.group(2),
+                seo_match.group(3),
+            )
+            if status == 404:
+                return self.send_error(404)
+            return self.send_html(html_text, status=status)
         if parsed.path not in ("/api/program", "/api/result", "/api/results", "/api/signals", "/api/venues"):
             return super().do_GET()
         query = parse_qs(parsed.query)
@@ -2765,6 +3174,34 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
         except BrokenPipeError:
             return
+
+    def send_text(self, text, status=200, content_type="text/plain; charset=utf-8", cache_control="no-store"):
+        body = (text or "").encode("utf-8")
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", cache_control)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            return
+
+    def send_html(self, html_text, status=200):
+        self.send_text(
+            html_text,
+            status=status,
+            content_type="text/html; charset=utf-8",
+            cache_control="public, max-age=300",
+        )
+
+    def send_xml(self, xml_text, status=200):
+        self.send_text(
+            xml_text,
+            status=status,
+            content_type="application/xml; charset=utf-8",
+            cache_control="public, max-age=600",
+        )
 
 
 if __name__ == "__main__":
