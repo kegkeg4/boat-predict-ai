@@ -2404,9 +2404,9 @@ function renderKorogashiGame(payload) {
   content.innerHTML = `
     <article class="korogashi-main ${netClass}">
       <div>
-        <small>${payload.venue} 月間コロガシ</small>
+        <small>全会場 月間コロガシ</small>
         <h3>${formatSignedYen(summary.net)}</h3>
-        <p>各日1,000円スタート。的中したら残高を次レースへ全額コロガシ、外れた日は0円で終了します。</p>
+        <p>全会場の保存済み2連単予測から勝負し、的中したら残高を次レースへ全額コロガシ。外れた日は0円で終了します。</p>
       </div>
       <div class="korogashi-ticket korogashi-month-result">
         <strong>${formatYen(summary.returnTotal)}</strong>
@@ -2429,7 +2429,7 @@ function renderKorogashiGame(payload) {
       <article>
         <small>直近日</small>
         <b>${latestDay ? `${latestDay.date} / ${formatSignedYen(latestDay.net)}` : "なし"}</b>
-        <span>${latestHistory.length ? latestHistory.map((item) => `${item.race}R ${item.hit ? "的中" : "終了"} ${item.after.toLocaleString("ja-JP")}円`).join(" / ") : "履歴なし"}</span>
+        <span>${latestHistory.length ? latestHistory.map((item) => `${item.venue || ""}${item.race}R ${item.hit ? "的中" : "終了"} ${item.after.toLocaleString("ja-JP")}円`).join(" / ") : "履歴なし"}</span>
       </article>
     </div>
   `;

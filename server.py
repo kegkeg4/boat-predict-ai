@@ -449,17 +449,17 @@ def build_result_board(date, jcd):
 
 
 def build_korogashi_month(date, jcd):
-    venue_index = int(jcd) - 1
-    venue = VENUE_NAMES[venue_index] if 0 <= venue_index < len(VENUE_NAMES) else jcd
     month = date[:7]
     store = read_learning_store()
     events_by_day = {}
+    venue_order = {name: index for index, name in enumerate(VENUE_NAMES)}
     for event in (store.get("events") or {}).values():
         if not isinstance(event, dict):
             continue
         event_date = str(event.get("date") or "")
-        if not event_date.startswith(month) or event.get("venue") != venue:
+        if not event_date.startswith(month):
             continue
+        venue = event.get("venue") or "不明"
         try:
             race_number = int(event.get("race") or 0)
         except (TypeError, ValueError):
@@ -467,10 +467,15 @@ def build_korogashi_month(date, jcd):
         if not 1 <= race_number <= 12:
             continue
         exacta_picks = []
+        confidence = 0
         for pick in (event.get("exactaPicks") if isinstance(event.get("exactaPicks"), list) else []):
             ticket_key = normalize_ticket(pick.get("ticket") if isinstance(pick, dict) else [])
             if len(ticket_key.split("-")) == 2:
                 exacta_picks.append(ticket_key)
+                try:
+                    confidence += float(pick.get("valueScore") or 0) + float(pick.get("probability") or 0) * 3
+                except (TypeError, ValueError):
+                    pass
         if not exacta_picks:
             continue
         result = event.get("result") if isinstance(event.get("result"), list) else []
@@ -481,7 +486,10 @@ def build_korogashi_month(date, jcd):
         if not result2t_key or not payout2t:
             continue
         events_by_day.setdefault(event_date, []).append({
+            "venue": venue,
+            "venueOrder": venue_order.get(venue, 999),
             "race": race_number,
+            "confidence": confidence,
             "tickets": list(dict.fromkeys(exacta_picks)),
             "result": result2t_key,
             "payout": payout2t,
@@ -497,7 +505,7 @@ def build_korogashi_month(date, jcd):
     max_streak = 0
     best_day = None
     for day in sorted(events_by_day):
-        races = sorted(events_by_day[day], key=lambda item: (item["race"], item["savedAt"]))
+        races = sorted(events_by_day[day], key=lambda item: (-item["confidence"], item["venueOrder"], item["race"], item["savedAt"]))
         balance = 1000
         started = False
         stopped = False
@@ -528,6 +536,7 @@ def build_korogashi_month(date, jcd):
             max_balance = max(max_balance, balance)
             total_bets += 1
             history.append({
+                "venue": item["venue"],
                 "race": item["race"],
                 "tickets": tickets,
                 "result": item["result"],
@@ -561,8 +570,8 @@ def build_korogashi_month(date, jcd):
     return {
         "date": date,
         "month": month,
-        "jcd": jcd,
-        "venue": venue,
+        "jcd": "",
+        "venue": "全会場",
         "daily": daily,
         "summary": {
             "days": len(daily),
