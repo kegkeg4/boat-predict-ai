@@ -422,6 +422,8 @@ def build_result_board(date, jcd):
                         "group": key,
                         "label": summary[key]["label"],
                         "betType": summary[key]["betType"],
+                        "ticket": result_for_type,
+                        "prediction": f"{summary[key]['label']} {summary[key]['betType']}",
                         "multiplier": multiplier,
                         "tier": tier,
                         "manfune": payout >= MANFUNE_YEN,
@@ -2243,23 +2245,40 @@ def merge_result_weather(primary, detail):
     if not isinstance(primary, dict) or not isinstance(detail, dict):
         return primary
     weather = detail.get("weather") or {}
-    if not weather.get("available"):
+    if not weather.get("available") and not detail.get("payouts"):
         return primary
     merged = dict(primary)
-    merged["weather"] = weather
+    if weather.get("available"):
+        merged["weather"] = weather
     if detail.get("payouts"):
         merged["payouts"] = detail["payouts"]
     merged["source"] = f"{primary.get('source') or 'result'}+raceresult-weather"
     return merged
 
 
+def has_payout_type(payload, payout_type):
+    for payout in (payload or {}).get("payouts") or []:
+        if payout.get("type") == payout_type:
+            return True
+    return False
+
+
 def load_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS, include_weather=False):
     cached = get_cached_result(date, jcd, race)
-    if cached and (not include_weather or (cached.get("weather") or {}).get("available")):
+    if cached and (
+        not include_weather
+        or (
+            (cached.get("weather") or {}).get("available")
+            and has_payout_type(cached, "2連単")
+        )
+    ):
         return cached
     pay_payload = get_pay_result(date, jcd, race, timeout=min(timeout, 12))
     if pay_payload:
-        if include_weather and not (pay_payload.get("weather") or {}).get("available"):
+        if include_weather and (
+            not (pay_payload.get("weather") or {}).get("available")
+            or not has_payout_type(pay_payload, "2連単")
+        ):
             try:
                 detail_payload = fetch_raceresult_payload(date, jcd, race, timeout=timeout)
                 pay_payload = merge_result_weather(pay_payload, detail_payload)
@@ -2562,7 +2581,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             return self.send_json({"error": "invalid parameters"}, 400)
         try:
             if parsed.path == "/api/result":
-                self.send_json(load_result(date, jcd, int(race)))
+                self.send_json(load_result(date, jcd, int(race), include_weather=True))
             elif parsed.path == "/api/results":
                 requested_races = []
                 for value in query.get("races", []):

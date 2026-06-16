@@ -1523,18 +1523,16 @@ function renderManshuBanner() {
     return;
   }
   const top = [...hits].sort((a, b) => b.payout - a.payout)[0];
-  const hasManshu = top.payout >= 10000;
-  const bannerClass = hasManshu ? "rainbow-manshu-banner manshu" : "rainbow-manshu-banner gold-hit-banner";
-  banner.className = bannerClass;
+  banner.className = "rainbow-manshu-banner high-payout";
   banner.hidden = false;
   banner.innerHTML = `
     <div>
-      <p class="eyebrow">${hasManshu ? "MANSHU HIT" : "HIGH PAYOUT HIT"}</p>
-      <strong>${hasManshu ? "万舟的中" : "50倍超え的中"} ${hits.length}本</strong>
-      <span>最高 ${top.race}R ${top.result.join("-")} / ${top.payout.toLocaleString("ja-JP")}円</span>
+      <p class="eyebrow">HIGH PAYOUT HIT</p>
+      <strong>高額当選的中 ${hits.length}本</strong>
+      <span>50倍以上をまとめて表示 / 最高 ${top.race}R ×${(top.payout / 100).toFixed(1)}</span>
     </div>
     <div class="manshu-list">
-      ${hits.map((item) => `<b>${item.race}R ${item.result.join("-")} ${item.payout.toLocaleString("ja-JP")}円</b>`).join("")}
+      ${hits.map((item) => `<b>${item.race}R ×${(item.payout / 100).toFixed(1)}</b>`).join("")}
     </div>
   `;
 }
@@ -1603,7 +1601,7 @@ function ensurePayoutBoardStyles() {
     .payout-boat{width:30px!important;height:34px!important;display:grid!important;place-items:center!important;flex:0 0 auto!important;border-radius:4px!important;font-size:22px!important;font-weight:900!important;box-shadow:0 2px 2px rgba(0,0,0,.35)!important}
     .payout-money{padding-right:12px!important;font-size:23px!important;font-weight:900!important;text-align:right!important;letter-spacing:.03em!important}
     .payout-popularity{color:#fff!important;font-size:15px!important;font-weight:900!important}
-    .payout-summary{display:grid!important;grid-template-columns:repeat(4,1fr)!important;gap:1px!important;background:rgba(255,255,255,.15)!important}
+    .payout-summary{display:grid!important;grid-template-columns:repeat(5,1fr)!important;gap:1px!important;background:rgba(255,255,255,.15)!important}
     .payout-summary div{padding:10px 12px!important;background:rgba(8,31,47,.62)!important}
     .payout-summary small{display:block!important;margin-bottom:4px!important;color:#a9d7ff!important;font-size:8px!important;font-weight:900!important;letter-spacing:.12em!important}
     .payout-summary strong{color:#fff!important;font-size:13px!important}
@@ -1634,6 +1632,9 @@ function renderPayoutBoard(official, hitPick, predictedFirst, exactaHitPick = nu
   const rows = buildResultPayoutRows(official);
   const resultKey = official.result.join("-");
   const exactaKey = official.result.slice(0, 2).join("-");
+  const exactaPredictionText = exactaHitPick
+    ? `3点内的中${exactaPayout ? ` ${exactaPayout.toLocaleString("ja-JP")}円` : " / 払戻未取得"}`
+    : "3点は不的中";
   return `
     <div class="payout-board">
       <div class="payout-board-header">
@@ -1653,8 +1654,9 @@ function renderPayoutBoard(official, hitPick, predictedFirst, exactaHitPick = nu
       </div>
       <div class="payout-summary">
         <div><small>確定3連単</small><strong>${resultKey}</strong></div>
+        <div><small>確定2連単</small><strong>${exactaKey}</strong></div>
         <div><small>3連単予測</small><strong>${hitPick ? `${hitPick.strategyLabel}${hitPick.strategyIndex + 1}点目で的中` : "7点は不的中"}</strong></div>
-        <div><small>2連単予測</small><strong>${exactaHitPick ? `3点内的中 ${exactaPayout.toLocaleString("ja-JP")}円` : `${exactaKey} / 3点は不的中`}</strong></div>
+        <div><small>2連単予測</small><strong>${exactaPredictionText}</strong></div>
         <div><small>1着評価</small><strong>${official.result[0] === predictedFirst.boat ? "1着艇を的中" : `${official.result[0]}号艇が勝利`}</strong></div>
       </div>
     </div>
@@ -1717,10 +1719,15 @@ function renderOfficialResult(data) {
     : exactaHitPick ? "2連単3点内的中" : "3連単・2連単とも不的中";
   const predictedFirst = data.ranking[0];
   const winner = official.result[0];
+  const exactaComment = exactaHitPick
+    ? (exactaPayout
+      ? `3点内的中、払戻${exactaPayout.toLocaleString("ja-JP")}円です。`
+      : "3点内的中、払戻は未取得です。")
+    : "3点内では不的中です。";
   document.querySelector(".result-grid").innerHTML = renderPayoutBoard(official, hitPick, predictedFirst, exactaHitPick, exactaPayout);
   document.querySelector("#resultComment").textContent = winner === predictedFirst.boat
-    ? `AI本命の${predictedFirst.boat}号艇が1着。2連単は${exactaHitPick ? `3点内的中、払戻${exactaPayout.toLocaleString("ja-JP")}円です。` : "3点内では不的中です。"}`
-    : `AI本命は${predictedFirst.boat}号艇でしたが、確定結果は${resultKey}。2連単は${exactaHitPick ? `3点内的中、払戻${exactaPayout.toLocaleString("ja-JP")}円です。` : "3点内では不的中です。"}`;
+    ? `AI本命の${predictedFirst.boat}号艇が1着。2連単は${exactaComment}`
+    : `AI本命は${predictedFirst.boat}号艇でしたが、確定結果は${resultKey}。2連単は${exactaComment}`;
   resultCard.hidden = false;
 }
 
@@ -2540,34 +2547,39 @@ function renderResultBoard(payload) {
   summary.innerHTML = items.map((item) => `
     <article class="result-board-stat ${item.available === false ? "disabled" : item.key}">
       <small>${item.label || item.key}${item.points ? `${item.points}点` : ""}</small>
-      <strong>${item.available === false ? "未取得" : `${item.hitRate || 0}%`}</strong>
-      <span>的中 ${item.hitRaces || 0}/${item.races || 0}R</span>
-      <b>回収率 ${item.available === false ? "—" : `${item.roi || 0}%`}</b>
+      <strong>${item.available === false ? "未集計" : `${item.roi || 0}%`}</strong>
+      <span>回収率</span>
     </article>
   `).join("");
-  races.innerHTML = (payload.races || []).map((row) => {
+  const winnerRows = (payload.races || []).filter((row) => Array.isArray(row.hits) && row.hits.length);
+  races.innerHTML = winnerRows.length ? winnerRows.map((row) => {
     const hits = Array.isArray(row.hits) ? row.hits : [];
-    const hitHtml = hits.length
-      ? hits.map((hit) => {
+    const topMultiplier = hits.reduce((max, hit) => Math.max(max, Number(hit.multiplier || 0)), 0);
+    const highHits = hits.filter((hit) => Number(hit.multiplier || 0) >= 50);
+    const rowTier = topMultiplier >= 100 ? "rainbow" : topMultiplier >= 50 ? "gold" : "";
+    const hitHtml = hits.map((hit) => {
         const multiplier = Number(hit.multiplier || 0);
         const tier = hit.tier || (multiplier >= 100 ? "rainbow" : multiplier >= 50 ? "gold" : "");
         const prefix = tier === "rainbow" ? "★ 万舟 " : tier === "gold" ? "★ 50倍 " : "";
         return `
-        <span class="result-board-chip ${hit.group || ""}${tier ? ` ${tier}` : ""}">
-          ${prefix}${hit.label} ${hit.betType} ×${multiplier.toFixed(1)}
-        </span>
+          <div class="result-board-hit-line ${tier ? ` ${tier}` : ""}">
+            <span><small>予測内容</small><b>${prefix}${hit.prediction || `${hit.label} ${hit.betType}`}</b></span>
+            <span><small>当選結果</small><b>${hit.ticket || "-"}</b></span>
+            <span><small>倍率</small><b>×${multiplier.toFixed(1)}</b></span>
+          </div>
       `;
-      }).join("")
-      : row.status === "confirmed"
-        ? `<span class="result-board-chip miss">— ハズレ</span>`
-        : `<span class="result-board-chip pending">未確定</span>`;
+      }).join("");
     return `
-      <article class="result-board-race ${hits.length ? "hit" : row.status === "confirmed" ? "miss" : "pending"}">
-        <strong>${row.race}R</strong>
-        <div>${hitHtml}</div>
+      <article class="result-board-race winner${rowTier ? ` high-payout ${rowTier}` : ""}">
+        <div class="result-board-race-main">
+          <small>${rowTier ? "HIGH PAYOUT HIT" : "WINNING RESULT"}</small>
+          <strong>${row.race}R</strong>
+          ${rowTier ? `<span>高額当選的中 ${highHits.length}本 / 最高 ×${topMultiplier.toFixed(1)}</span>` : ""}
+        </div>
+        <div class="result-board-race-hits">${hitHtml}</div>
       </article>
     `;
-  }).join("");
+  }).join("") : `<p class="performance-empty">この会場・日付では、保存済み予測の当選はまだありません。</p>`;
 }
 
 async function loadResultBoard() {
