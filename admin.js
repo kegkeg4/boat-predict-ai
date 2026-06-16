@@ -1,6 +1,10 @@
 const dateInput = document.querySelector("#adminDate");
 const reloadButton = document.querySelector("#adminReload");
 const batchSaveButton = document.querySelector("#adminBatchSave");
+const rangeFromInput = document.querySelector("#adminRangeFrom");
+const rangeToInput = document.querySelector("#adminRangeTo");
+const rangeStartButton = document.querySelector("#adminRangeStart");
+const rangeCancelButton = document.querySelector("#adminRangeCancel");
 const statusText = document.querySelector("#adminStatus");
 const tableBody = document.querySelector("#adminTableBody");
 const tableFoot = document.querySelector("#adminTableFoot");
@@ -17,6 +21,9 @@ function toInputDate(date) {
 }
 
 function formatDateLabel(dateText) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText || "")) {
+    return dateText || "-";
+  }
   const [, month, day] = dateText.split("-");
   return `${Number(month)}/${Number(day)}`;
 }
@@ -173,14 +180,32 @@ async function loadPerformance() {
 }
 
 function renderBackfillStatus(status) {
+  const range = status?.range || {};
+  if (status?.rangeActive) {
+    batchSaveButton.disabled = true;
+    if (rangeStartButton) rangeStartButton.disabled = true;
+    if (rangeCancelButton) rangeCancelButton.disabled = false;
+    const total = range.totalDays || 0;
+    const completed = range.completedDays || 0;
+    const currentDate = range.currentDate ? ` / ${range.currentDate}` : "";
+    const venue = status.currentVenue ? ` / ${status.currentVenue}` : "";
+    statusText.textContent = `連続集計中 ${completed}/${total}日${currentDate}${venue} / 保存 ${range.savedEventsTotal || 0}件`;
+    return true;
+  }
   if (!status?.active) {
     if (status?.message && status.message !== "待機中") {
       statusText.textContent = status.message;
+    } else if (range?.message && range.message !== "待機中") {
+      statusText.textContent = range.message;
     }
     batchSaveButton.disabled = false;
+    if (rangeStartButton) rangeStartButton.disabled = false;
+    if (rangeCancelButton) rangeCancelButton.disabled = true;
     return false;
   }
   batchSaveButton.disabled = true;
+  if (rangeStartButton) rangeStartButton.disabled = true;
+  if (rangeCancelButton) rangeCancelButton.disabled = true;
   const total = status.totalVenues || 0;
   const completed = status.completedVenues || 0;
   const venue = status.currentVenue ? ` / ${status.currentVenue}` : "";
@@ -204,6 +229,8 @@ async function pollBackfillStatus() {
   } catch (error) {
     statusText.textContent = `一括集計の状態確認に失敗しました。${error.message ? ` (${error.message})` : ""}`;
     batchSaveButton.disabled = false;
+    if (rangeStartButton) rangeStartButton.disabled = false;
+    if (rangeCancelButton) rangeCancelButton.disabled = true;
   }
 }
 
@@ -222,13 +249,64 @@ async function startBackfill() {
   } catch (error) {
     statusText.textContent = `一括集計の開始に失敗しました。${error.message ? ` (${error.message})` : ""}`;
     batchSaveButton.disabled = false;
+    if (rangeStartButton) rangeStartButton.disabled = false;
+  }
+}
+
+async function startRangeBackfill() {
+  if (!rangeFromInput || !rangeToInput || !rangeStartButton) return;
+  clearTimeout(backfillPollTimer);
+  const fromDate = rangeFromInput.value;
+  const toDate = rangeToInput.value;
+  if (!fromDate || !toDate) {
+    statusText.textContent = "連続集計の開始日と終了日を選んでください。";
+    return;
+  }
+  rangeStartButton.disabled = true;
+  batchSaveButton.disabled = true;
+  statusText.textContent = "サーバー側で範囲指定の連続集計を開始します...";
+  try {
+    const url = `/api/admin/backfill-range?from=${encodeURIComponent(fromDate)}&to=${encodeURIComponent(toDate)}&force=1`;
+    const response = await fetch(url, { credentials: "same-origin" });
+    const status = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(status.error || `backfill-range ${response.status}`);
+    renderBackfillStatus(status);
+    backfillPollTimer = setTimeout(pollBackfillStatus, 1500);
+  } catch (error) {
+    statusText.textContent = `連続集計の開始に失敗しました。${error.message ? ` (${error.message})` : ""}`;
+    rangeStartButton.disabled = false;
+    batchSaveButton.disabled = false;
+  }
+}
+
+async function cancelRangeBackfill() {
+  if (!rangeCancelButton) return;
+  rangeCancelButton.disabled = true;
+  statusText.textContent = "連続集計の停止を依頼しています...";
+  try {
+    const response = await fetch("/api/admin/backfill-range/cancel", {
+      credentials: "same-origin",
+    });
+    if (!response.ok) throw new Error(`cancel ${response.status}`);
+    const status = await response.json();
+    renderBackfillStatus(status);
+    backfillPollTimer = setTimeout(pollBackfillStatus, 1500);
+  } catch (error) {
+    statusText.textContent = `連続集計の停止に失敗しました。${error.message ? ` (${error.message})` : ""}`;
+    rangeCancelButton.disabled = false;
   }
 }
 
 const initialDate = new URLSearchParams(window.location.search).get("date");
 dateInput.value = /^\d{4}-\d{2}-\d{2}$/.test(initialDate || "") ? initialDate : toInputDate(new Date());
+if (rangeFromInput && rangeToInput) {
+  rangeFromInput.value = dateInput.value;
+  rangeToInput.value = dateInput.value;
+}
 reloadButton.addEventListener("click", loadPerformance);
 batchSaveButton.addEventListener("click", startBackfill);
+rangeStartButton?.addEventListener("click", startRangeBackfill);
+rangeCancelButton?.addEventListener("click", cancelRangeBackfill);
 dateInput.addEventListener("change", loadPerformance);
 loadPerformance();
 pollBackfillStatus();

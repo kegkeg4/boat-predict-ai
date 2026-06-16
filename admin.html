@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;800&family=Noto+Sans+JP:wght@400;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260616-admin-source-note">
+  <link rel="stylesheet" href="styles.css?v=20260617-backfill-range">
 </head>
 <body class="admin-page">
   <main class="admin-shell">
@@ -28,6 +28,20 @@
       <button id="adminReload" type="button">集計を更新</button>
       <button id="adminBatchSave" class="admin-secondary-button" type="button">サーバーで全会場を一括集計</button>
       <p id="adminStatus">管理データを読み込みます。</p>
+    </section>
+
+    <section class="admin-control admin-range-control card">
+      <div>
+        <label for="adminRangeFrom">連続集計 開始日</label>
+        <input id="adminRangeFrom" type="date">
+      </div>
+      <div>
+        <label for="adminRangeTo">終了日</label>
+        <input id="adminRangeTo" type="date">
+      </div>
+      <button id="adminRangeStart" class="admin-secondary-button" type="button">範囲を1日ずつ集計</button>
+      <button id="adminRangeCancel" class="admin-secondary-button admin-danger-button" type="button" disabled>連続集計を停止</button>
+      <p>最大14日・直近35日まで。1日ずつ順番に集計し、再起動後も続きから再開します。</p>
     </section>
 
     <section class="admin-summary">
@@ -90,6 +104,6 @@
       <p class="admin-note">この画面は、ブラウザ内保存ログの同期とサーバー側の自動集計ログから収支を表示します。未保存の会場は収支に含みません。</p>
     </section>
   </main>
-  <script src="admin.js?v=20260616-admin-source-note"></script>
+  <script src="admin.js?v=20260617-backfill-range"></script>
 </body>
 </html>

@@ -30,6 +30,9 @@ CACHE_FLUSH_INTERVAL_SECONDS = int(os.environ.get("BOAT_CACHE_FLUSH_INTERVAL", "
 ADMIN_BACKFILL_WORKERS = int(os.environ.get("BOAT_ADMIN_BACKFILL_WORKERS", "4"))
 ADMIN_BACKFILL_RESULT_TIMEOUT = float(os.environ.get("BOAT_ADMIN_RESULT_TIMEOUT", "16"))
 ADMIN_BACKFILL_SIGNAL_TIMEOUT = float(os.environ.get("BOAT_ADMIN_SIGNAL_TIMEOUT", "2"))
+BACKFILL_RANGE_GAP_SECONDS = float(os.environ.get("BOAT_BACKFILL_RANGE_GAP_SECONDS", "5"))
+BACKFILL_RANGE_MAX_DAYS = int(os.environ.get("BOAT_BACKFILL_RANGE_MAX_DAYS", "14"))
+BACKFILL_RANGE_MAX_DAYS_BACK = int(os.environ.get("BOAT_BACKFILL_RANGE_MAX_DAYS_BACK", "35"))
 BACKGROUND_SYNC_INTERVAL_SECONDS = int(os.environ.get("BOAT_BACKGROUND_SYNC_INTERVAL", "1800"))
 PAY_WARM_INTERVAL_SECONDS = int(os.environ.get("BOAT_PAY_WARM_INTERVAL", "45"))
 SIGNALS_CACHE_SECONDS = int(os.environ.get("BOAT_SIGNALS_CACHE_SECONDS", "180"))
@@ -40,6 +43,7 @@ SCHEDULE_CACHE_FILE = CACHE_DIR / "schedules.json"
 RESULTS_CACHE_FILE = CACHE_DIR / "results.json"
 SIGNALS_CACHE_FILE = CACHE_DIR / "signals.json"
 LEARNING_FILE = CACHE_DIR / "learning.json"
+BACKFILL_RANGE_FILE = CACHE_DIR / "backfill_range.json"
 SCHEDULE_CACHE_VERSION = 2
 JST = timezone(timedelta(hours=9))
 BOATRACE_JCDS = [f"{number:02d}" for number in range(1, 25)]
@@ -82,6 +86,7 @@ pay_refresh_lock = threading.Lock()
 pay_refreshing_dates = set()
 admin_backfill_status = {
     "active": False,
+    "rangeActive": False,
     "date": None,
     "startedAt": None,
     "finishedAt": None,
@@ -90,8 +95,20 @@ admin_backfill_status = {
     "totalVenues": 0,
     "savedEvents": 0,
     "message": "待機中",
+    "range": {
+        "from": None,
+        "to": None,
+        "totalDays": 0,
+        "completedDays": 0,
+        "currentDate": None,
+        "savedEventsTotal": 0,
+        "message": "待機中",
+        "startedAt": None,
+        "finishedAt": None,
+    },
 }
 admin_backfill_done = set()
+admin_backfill_range_cancel = threading.Event()
 
 
 def read_learning_store():
@@ -1556,7 +1573,7 @@ def run_admin_backfill(date, force=False):
 
 def schedule_admin_backfill(date, force=False):
     with admin_backfill_lock:
-        if admin_backfill_status.get("active"):
+        if admin_backfill_status.get("active") or admin_backfill_status.get("rangeActive"):
             return dict(admin_backfill_status)
         if not force and date in admin_backfill_done:
             return dict(admin_backfill_status)
@@ -1570,6 +1587,234 @@ def schedule_admin_backfill(date, force=False):
     thread = threading.Thread(target=run_admin_backfill, args=(date, force), daemon=True)
     thread.start()
     return get_admin_backfill_status()
+
+
+def backfill_range_state_path():
+    return BACKFILL_RANGE_FILE
+
+
+def save_backfill_range_state(state):
+    write_json_atomic(backfill_range_state_path(), state)
+
+
+def load_backfill_range_state():
+    try:
+        return json.loads(backfill_range_state_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def clear_backfill_range_state(reset_status=False):
+    try:
+        backfill_range_state_path().unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    if reset_status:
+        with admin_backfill_lock:
+            admin_backfill_status["rangeActive"] = False
+            admin_backfill_status["range"] = {
+                "from": None,
+                "to": None,
+                "totalDays": 0,
+                "completedDays": 0,
+                "currentDate": None,
+                "savedEventsTotal": 0,
+                "message": "待機中",
+                "startedAt": None,
+                "finishedAt": datetime.now(JST).isoformat(timespec="seconds"),
+            }
+
+
+def daterange_list(from_date, to_date):
+    start = datetime.strptime(from_date, "%Y-%m-%d").date()
+    end = datetime.strptime(to_date, "%Y-%m-%d").date()
+    days = []
+    current = start
+    while current <= end:
+        days.append(current.strftime("%Y-%m-%d"))
+        current += timedelta(days=1)
+    return days
+
+
+def validate_backfill_range(from_date, to_date):
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", from_date or ""):
+        return False, "開始日の形式が不正です"
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", to_date or ""):
+        return False, "終了日の形式が不正です"
+    try:
+        start = datetime.strptime(from_date, "%Y-%m-%d").date()
+        end = datetime.strptime(to_date, "%Y-%m-%d").date()
+    except ValueError:
+        return False, "日付が不正です"
+    today = datetime.now(JST).date()
+    if start > end:
+        return False, "開始日は終了日以前にしてください"
+    if end > today:
+        return False, "終了日は今日以前にしてください"
+    if (end - start).days + 1 > BACKFILL_RANGE_MAX_DAYS:
+        return False, f"1回の範囲は最大{BACKFILL_RANGE_MAX_DAYS}日までです"
+    if (today - start).days > BACKFILL_RANGE_MAX_DAYS_BACK:
+        return False, f"開始日は直近{BACKFILL_RANGE_MAX_DAYS_BACK}日以内にしてください"
+    return True, ""
+
+
+def update_backfill_range_status(**updates):
+    with admin_backfill_lock:
+        current = dict(admin_backfill_status.get("range") or {})
+        current.update(updates)
+        admin_backfill_status["range"] = current
+
+
+def run_backfill_range_worker(pending, force=True, state=None):
+    pending = list(pending or [])
+    state = dict(state or {})
+    total_days = int(state.get("totalDays") or len(pending))
+    completed_days = total_days - len(pending)
+    saved_total = int(state.get("savedEventsTotal") or 0)
+    started_at = state.get("startedAt") or datetime.now(JST).isoformat(timespec="seconds")
+    with admin_backfill_lock:
+        admin_backfill_status["rangeActive"] = True
+        admin_backfill_status["range"] = {
+            "from": state.get("from") or (pending[0] if pending else None),
+            "to": state.get("to") or (pending[-1] if pending else None),
+            "totalDays": total_days,
+            "completedDays": completed_days,
+            "currentDate": pending[0] if pending else None,
+            "savedEventsTotal": saved_total,
+            "message": "連続集計を開始します",
+            "startedAt": started_at,
+            "finishedAt": None,
+        }
+    admin_backfill_range_cancel.clear()
+    while pending:
+        target_date = pending[0]
+        if admin_backfill_range_cancel.is_set():
+            update_backfill_range_status(
+                currentDate=target_date,
+                message="連続集計を停止しました",
+                finishedAt=datetime.now(JST).isoformat(timespec="seconds"),
+            )
+            save_backfill_range_state({
+                **state,
+                "pending": pending,
+                "force": force,
+                "savedEventsTotal": saved_total,
+                "startedAt": started_at,
+            })
+            with admin_backfill_lock:
+                admin_backfill_status["rangeActive"] = False
+            return
+        update_backfill_range_status(currentDate=target_date, message=f"{target_date}を集計中")
+        try:
+            run_admin_backfill(target_date, force=force)
+            with admin_backfill_lock:
+                saved_today = int(admin_backfill_status.get("savedEvents") or 0)
+            saved_total += saved_today
+            pending.pop(0)
+            completed_days += 1
+            save_backfill_range_state({
+                **state,
+                "pending": pending,
+                "force": force,
+                "savedEventsTotal": saved_total,
+                "startedAt": started_at,
+            })
+            update_backfill_range_status(
+                completedDays=completed_days,
+                currentDate=pending[0] if pending else target_date,
+                savedEventsTotal=saved_total,
+                message=f"{target_date} 完了 / 保存 {saved_today}件",
+            )
+        except Exception as error:
+            pending.pop(0)
+            completed_days += 1
+            save_backfill_range_state({
+                **state,
+                "pending": pending,
+                "force": force,
+                "savedEventsTotal": saved_total,
+                "startedAt": started_at,
+                "lastError": f"{target_date}: {error}",
+            })
+            update_backfill_range_status(
+                completedDays=completed_days,
+                currentDate=pending[0] if pending else target_date,
+                message=f"{target_date}でエラー: {error}",
+            )
+        if pending:
+            time.sleep(max(0, BACKFILL_RANGE_GAP_SECONDS))
+    clear_backfill_range_state()
+    with admin_backfill_lock:
+        range_state = dict(admin_backfill_status.get("range") or {})
+        range_state.update({
+            "completedDays": total_days,
+            "currentDate": None,
+            "savedEventsTotal": saved_total,
+            "message": f"連続集計完了 / 保存 {saved_total}件",
+            "finishedAt": datetime.now(JST).isoformat(timespec="seconds"),
+        })
+        admin_backfill_status["range"] = range_state
+        admin_backfill_status["rangeActive"] = False
+
+
+def schedule_backfill_range(from_date, to_date, force=True):
+    ok, message = validate_backfill_range(from_date, to_date)
+    if not ok:
+        return False, {"error": message}
+    pending = daterange_list(from_date, to_date)
+    if not force:
+        pending = [date for date in pending if date not in admin_backfill_done]
+    state = {
+        "from": from_date,
+        "to": to_date,
+        "force": force,
+        "pending": pending,
+        "startedAt": datetime.now(JST).isoformat(timespec="seconds"),
+        "totalDays": len(pending),
+        "savedEventsTotal": 0,
+    }
+    with admin_backfill_lock:
+        if admin_backfill_status.get("active") or admin_backfill_status.get("rangeActive"):
+            return True, dict(admin_backfill_status)
+        admin_backfill_status["rangeActive"] = True
+        admin_backfill_status["range"] = {
+            "from": from_date,
+            "to": to_date,
+            "totalDays": len(pending),
+            "completedDays": 0,
+            "currentDate": pending[0] if pending else None,
+            "savedEventsTotal": 0,
+            "message": "連続集計開始待ち",
+            "startedAt": state["startedAt"],
+            "finishedAt": None,
+        }
+    if not pending:
+        clear_backfill_range_state(reset_status=True)
+        return True, get_admin_backfill_status()
+    save_backfill_range_state(state)
+    thread = threading.Thread(target=run_backfill_range_worker, args=(pending, force, state), daemon=True)
+    thread.start()
+    return True, get_admin_backfill_status()
+
+
+def cancel_backfill_range():
+    admin_backfill_range_cancel.set()
+    update_backfill_range_status(message="停止要求を受け付けました。実行中の日付が終わったら停止します。")
+    return get_admin_backfill_status()
+
+
+def resume_backfill_range_on_startup():
+    state = load_backfill_range_state()
+    if not state or not state.get("pending"):
+        return
+    thread = threading.Thread(
+        target=run_backfill_range_worker,
+        args=(state.get("pending", []), bool(state.get("force", True)), state),
+        daemon=True,
+    )
+    thread.start()
 
 
 def admin_auto_backfill_worker():
@@ -3149,6 +3394,15 @@ class AppHandler(SimpleHTTPRequestHandler):
             if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
                 return self.send_json({"error": "invalid parameters"}, 400)
             return self.send_json(schedule_admin_backfill(date, force=force))
+        if parsed.path == "/api/admin/backfill-range":
+            query = parse_qs(parsed.query)
+            from_date = query.get("from", [""])[0]
+            to_date = query.get("to", [""])[0]
+            force = query.get("force", ["1"])[0] != "0"
+            ok, payload = schedule_backfill_range(from_date, to_date, force=force)
+            return self.send_json(payload, 200 if ok else 400)
+        if parsed.path == "/api/admin/backfill-range/cancel":
+            return self.send_json(cancel_backfill_range())
         if parsed.path == "/api/admin/performance":
             query = parse_qs(parsed.query)
             date = query.get("date", [""])[0]
@@ -3316,6 +3570,7 @@ if __name__ == "__main__":
         schedule_pay_warmer()
     if os.environ.get("BOAT_AUTO_BACKFILL", "1") != "0":
         schedule_admin_auto_backfill()
+    resume_backfill_range_on_startup()
     try:
         server.serve_forever()
     finally:

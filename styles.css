@@ -773,6 +773,9 @@ footer { display: flex; justify-content: space-between; padding: 22px 3px 0; col
 .admin-control button:disabled { opacity: .55; }
 .admin-control .admin-secondary-button { color: #0877f9; background: #eaf4ff; border: 1px solid #b8d7fb; }
 .admin-control .admin-secondary-button:hover { background: #dff0ff; }
+.admin-control .admin-danger-button { color: #c74848; background: #fff1f1; border-color: #f3c7c7; }
+.admin-range-control { align-items: end; }
+.admin-range-control p { max-width: 380px; line-height: 1.6; }
 .admin-control p { margin: 0 0 9px auto; color: #758699; font-size: 11px; }
 .admin-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .admin-summary article { padding: 16px; }
