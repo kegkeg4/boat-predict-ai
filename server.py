@@ -596,6 +596,32 @@ VENUE_SLUGS = [
     "amagasaki", "naruto", "marugame", "kojima", "miyajima", "tokuyama",
     "shimonoseki", "wakamatsu", "ashiya", "fukuoka", "karatsu", "omura",
 ]
+VENUE_DESCRIPTIONS = {
+    "kiryu": "群馬県、淡水の湖水面のナイター場。標高が高く、冬場はモーターが伸びやすい。イン1着率は全国平均並みだが、季節や気象で配当が荒れやすい。",
+    "toda": "埼玉県、淡水の河川水面。1マークの幅が狭く全国屈指の『イン受難』水面で、イン1着率が50%を下回ることもある。センター（3・4コース）のまくりが決まりやすく、本命党には難しい。",
+    "edogawa": "東京都、全国で唯一の河川（汽水）水面。風と潮、川の流れで荒れやすい全国屈指の難水面。イン1着率は低め（約46%）で、2コースの差しや高配当が出やすい。",
+    "heiwajima": "東京都、海水水面。イン1着率は全国ワースト級で、万舟率・平均配当が高い。5・6コースの連対も見られ、穴狙い傾向が強い。",
+    "tamagawa": "東京都、淡水の静水面。難水面の多い関東では比較的インを信頼しやすく買い目を絞りやすい。ただし悪天候や格下のイン戦では荒れることがある。",
+    "hamanako": "静岡県、汽水の湖水面。全国最大級の広い水面で乗りやすく、スピード戦やまくり差しが多い。インを優遇する番組が少なくイン1着率は平均以下、強風時は荒れやすい。",
+    "gamagori": "愛知県、海水のプール水面で干満の影響が少ないナイター場。1マーク明けのコース幅が全国一広くスピードを保ちやすい。近年はイン勝率が低下傾向で、多彩な決まり手が出やすい。",
+    "tokoname": "愛知県、海水水面（水門で水位変動は小さい）。バック側が広くインが有利で、追い風時は特にイン逃げが決まりやすい。一般戦は前づけで枠なりが崩れやすい。",
+    "tsu": "三重県のナイター場。風の影響を受けやすく、風向き次第で展開や難度が変わりやすい水面。",
+    "mikuni": "福井県、淡水水面。『あらし』と呼ばれる強風が吹くと大きく荒れ、配当が跳ねやすい。風が穏やかな日はインが安定する、風次第の水面。",
+    "biwako": "滋賀県、琵琶湖の淡水水面。標高が高く水質が硬めで、比叡おろしなどの風で荒れやすい。イン1着率は低めで難水面寄り。",
+    "suminoe": "大阪府、淡水水面。整備された静水で『日本一の競走水面』とも称され、インが安定して堅い決着が出やすい。公営ナイター発祥で売上も全国トップ級。",
+    "amagasaki": "兵庫県、淡水のプール水面。建物に囲まれ風の影響が少なく穏やかで、インがやや有利な堅めの水面。",
+    "naruto": "徳島県、海水水面。干満差やうねりが1コースの逃げを阻害し、2コースの差しが決まりやすい。季節風の影響も受けやすい。",
+    "marugame": "香川県、海水のナイター場。瀬戸内で干満差があり、基本はイン優勢だが、風や潮で展開が変わる。",
+    "kojima": "岡山県、海水水面。瀬戸内特有の干満差・潮の動きで水面が変化し、読みづらい展開も出やすい。",
+    "miyajima": "広島県、海水水面。干満差が大きく潮流や風の影響を受けやすく、水面状況で狙い目が変わる。",
+    "tokuyama": "山口県、海水のナイター場。1マークの幅が狭くインのターンがしやすいため、全国屈指のイン1着率を誇る鉄板水面。",
+    "shimonoseki": "山口県、海水のナイター場。イン1着率が高く初心者にも予想しやすい鉄板寄りの水面。",
+    "wakamatsu": "福岡県、海水のナイター場。干満差やうねりで荒れることがあり、水面状況で狙いが変わる玄人向けの場。",
+    "ashiya": "福岡県、淡水水面。スタートが揃いやすい穏やかな水面で、イン1着率は全国トップクラスの鉄板水面。",
+    "fukuoka": "福岡県、那珂川河口の汽水水面。海からのうねりや潮の影響で水面が難しく、玄人向けとされる。",
+    "karatsu": "佐賀県、淡水のナイター場。比較的素直な水面だが、冬場の季節風で荒れることがある。",
+    "omura": "長崎県、海水水面で日本最古のボートレース場。1コースの1着率が全国一（60%超）で、最も堅い鉄板水面として知られる。スタートが見やすく波乱が少ない。",
+}
 SLUG_TO_JCD = {
     slug: f"{index + 1:02d}"
     for index, slug in enumerate(VENUE_SLUGS)
@@ -872,18 +898,25 @@ def render_seo_venue(origin, slug):
     dates = seo_dates_for_venue(venue)
     robots = "index,follow" if dates else "noindex,follow"
     canonical = f"{origin}/boatrace/{slug}/"
-    title = f"{venue} 競艇AI予測｜ボートレース予想と結果検証"
-    description = f"{venue}の競艇AI予測ハブ。直近開催日の予測、確定結果、回収率を保存済みデータから確認できます。"
+    feature = VENUE_DESCRIPTIONS.get(slug, "")
+    title = f"{venue}競艇場の特徴とAI予測｜ボートレース予想・結果検証"
+    description = (feature or f"{venue}の競艇AI予測ハブ。") + "直近開催日の予測・確定結果・回収率を保存済みデータから確認できます。"
     date_links = "".join(
         f"<li><a href=\"/boatrace/{slug}/{date}/\">{seo_escape(date)} {seo_escape(venue)} 予想・結果一覧</a></li>"
         for date in dates
     ) or "<li>保存済みデータはまだありません。</li>"
+    feature_card = f"""
+<section class="card">
+  <h2>{seo_escape(venue)}競艇場の特徴</h2>
+  <p>{seo_escape(feature)}</p>
+</section>""" if feature else ""
     body = f"""
 <section class="hero">
   <p class="eyebrow">VENUE HUB</p>
-  <h1>{seo_escape(venue)} 競艇AI予測</h1>
-  <p class="answer">{seo_escape(venue)}のボートレース予想と結果検証ページです。保存済みの予測・確定結果をもとに、ロングテール検索で読める形にしています。</p>
+  <h1>{seo_escape(venue)}競艇場 AI予測と特徴</h1>
+  <p class="answer">{seo_escape(feature) or seo_escape(venue) + "のボートレース予想と結果検証ページです。"}</p>
 </section>
+{feature_card}
 <section class="card">
   <h2>{seo_escape(venue)}の直近開催日</h2>
   <ul>{date_links}</ul>
