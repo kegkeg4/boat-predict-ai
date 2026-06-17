@@ -2399,14 +2399,17 @@ function renderKorogashiGame(payload) {
   const bestDay = summary.bestDay;
   const latestHistory = latestDay?.history || [];
   const netClass = summary.net >= 0 ? "plus" : "minus";
+  const periodLabel = payload.periodStart && payload.periodEnd
+    ? `${payload.periodStart}〜${payload.periodEnd}`
+    : `${payload.month} 月間`;
   badge.textContent = `${payload.month} 月間`;
   badge.className = netClass === "plus" ? "buy" : "watch";
   content.innerHTML = `
     <article class="korogashi-main ${netClass}">
       <div>
-        <small>全会場 月間コロガシ</small>
+        <small>全会場 月間コロガシ / ${periodLabel}</small>
         <h3>${formatSignedYen(summary.net)}</h3>
-        <p>全会場の保存済み2連単予測から勝負し、的中したら残高を次レースへ全額コロガシ。外れた日は0円で終了します。</p>
+        <p>月末で締めて翌月1日に0円へリセット。毎日1,000円から始め、全会場の保存済み2連単予測から勝負します。的中したら残高を次レースへ全額コロガシ、外れた日は0円で終了します。</p>
       </div>
       <div class="korogashi-ticket korogashi-month-result">
         <strong>${formatYen(summary.returnTotal)}</strong>

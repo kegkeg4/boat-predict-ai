@@ -467,7 +467,13 @@ def build_result_board(date, jcd):
 
 
 def build_korogashi_month(date, jcd):
-    month = date[:7]
+    try:
+        selected_day = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        selected_day = datetime.now(JST).date()
+    month = selected_day.strftime("%Y-%m")
+    period_start = selected_day.replace(day=1)
+    period_end = selected_day
     store = read_learning_store()
     events_by_day = {}
     venue_order = {name: index for index, name in enumerate(VENUE_NAMES)}
@@ -476,6 +482,12 @@ def build_korogashi_month(date, jcd):
             continue
         event_date = str(event.get("date") or "")
         if not event_date.startswith(month):
+            continue
+        try:
+            event_day = datetime.strptime(event_date, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if event_day < period_start or event_day > period_end:
             continue
         venue = event.get("venue") or "不明"
         try:
@@ -588,6 +600,9 @@ def build_korogashi_month(date, jcd):
     return {
         "date": date,
         "month": month,
+        "periodStart": period_start.strftime("%Y-%m-%d"),
+        "periodEnd": period_end.strftime("%Y-%m-%d"),
+        "monthlyReset": True,
         "jcd": "",
         "venue": "全会場",
         "daily": daily,
@@ -603,7 +618,7 @@ def build_korogashi_month(date, jcd):
             "maxStreak": max_streak,
             "bestDay": best_day,
         },
-        "note": "各日1,000円スタート。2連単3点へ残高を均等配分し、的中時は払戻を次レースへ全額コロガシ。外れた日は0円で終了します。",
+        "note": "月末で締め、翌月1日に0円へリセットします。各日1,000円スタート。2連単3点へ残高を均等配分し、的中時は払戻を次レースへ全額コロガシ。外れた日は0円で終了します。",
     }
 
 
