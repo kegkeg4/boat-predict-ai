@@ -35,6 +35,7 @@ BACKFILL_RANGE_MAX_DAYS = int(os.environ.get("BOAT_BACKFILL_RANGE_MAX_DAYS", "14
 BACKFILL_RANGE_MAX_DAYS_BACK = int(os.environ.get("BOAT_BACKFILL_RANGE_MAX_DAYS_BACK", "35"))
 BACKGROUND_SYNC_INTERVAL_SECONDS = int(os.environ.get("BOAT_BACKGROUND_SYNC_INTERVAL", "1800"))
 PAY_WARM_INTERVAL_SECONDS = int(os.environ.get("BOAT_PAY_WARM_INTERVAL", "45"))
+TODAY_RECORD_INTERVAL_SECONDS = int(os.environ.get("BOAT_TODAY_RECORD_INTERVAL", "900"))
 SIGNALS_CACHE_SECONDS = int(os.environ.get("BOAT_SIGNALS_CACHE_SECONDS", "180"))
 PROGRAM_UNAVAILABLE_CACHE_SECONDS = int(os.environ.get("BOAT_PROGRAM_UNAVAILABLE_CACHE_SECONDS", "5"))
 CACHE_DIR = Path(os.environ.get("BOAT_DATA_DIR", Path(__file__).with_name(".official-cache")))
@@ -84,6 +85,8 @@ learning_lock = threading.Lock()
 admin_backfill_lock = threading.Lock()
 pay_refresh_lock = threading.Lock()
 pay_refreshing_dates = set()
+result_enrich_lock = threading.Lock()
+result_enriching = set()
 admin_backfill_status = {
     "active": False,
     "rangeActive": False,
@@ -1832,13 +1835,78 @@ def resume_backfill_range_on_startup():
     thread.start()
 
 
+def record_today_completed_once():
+    """Record only today's completed races that are not yet in the learning log."""
+    date = current_jst_date()
+    with admin_backfill_lock:
+        if admin_backfill_status.get("active") or admin_backfill_status.get("rangeActive"):
+            return 0
+    try:
+        venues_payload = load_venues_status(date)
+    except Exception:
+        return 0
+    active_jcds = sorted(
+        jcd
+        for jcd, status in (venues_payload.get("venues") or {}).items()
+        if status.get("available")
+    )
+    if not active_jcds:
+        return 0
+    existing_keys = existing_learning_keys()
+    saved = 0
+    for jcd in active_jcds:
+        with admin_backfill_lock:
+            if admin_backfill_status.get("active") or admin_backfill_status.get("rangeActive"):
+                break
+        try:
+            venue = VENUE_NAMES[int(jcd) - 1]
+        except (TypeError, ValueError, IndexError):
+            continue
+        try:
+            program = load_program(date, jcd, 1, should_prefetch=False)
+        except Exception:
+            continue
+        target_races = []
+        for race_info in program.get("races", []):
+            race = race_info.get("race")
+            if not race:
+                continue
+            if not is_server_race_completed(date, race_info.get("cutoff")):
+                continue
+            if f"{date}-{venue}-{race}" in existing_keys:
+                continue
+            target_races.append(race)
+        if not target_races:
+            continue
+        venue_events = []
+        for race in target_races:
+            try:
+                event = build_admin_backfill_event(date, jcd, race)
+            except Exception:
+                event = None
+            if event:
+                venue_events.append(event)
+        if venue_events:
+            record_learning_events(venue_events)
+            saved += len(venue_events)
+            existing_keys.update(
+                event["key"] for event in venue_events if event.get("key")
+            )
+        time.sleep(1.0)
+    return saved
+
+
 def admin_auto_backfill_worker():
     while True:
+        try:
+            record_today_completed_once()
+        except Exception:
+            pass
         now = datetime.now(JST)
         target = (now - timedelta(days=1)).strftime("%Y-%m-%d")
         if now.hour >= 2 and target not in admin_backfill_done:
             schedule_admin_backfill(target)
-        time.sleep(1800)
+        time.sleep(TODAY_RECORD_INTERVAL_SECONDS)
 
 
 def schedule_admin_auto_backfill():
@@ -2662,6 +2730,38 @@ def schedule_pay_refresh(date):
     threading.Thread(target=worker, daemon=True).start()
 
 
+def schedule_result_enrich(date, jcd, race, timeout=DETAIL_FETCH_TIMEOUT_SECONDS):
+    if date > current_jst_date():
+        return
+    key = f"{date}-{jcd}-{race}"
+    with result_enrich_lock:
+        if key in result_enriching:
+            return
+        result_enriching.add(key)
+
+    def worker():
+        try:
+            base = get_stored_result(date, jcd, race) or get_pay_result(
+                date,
+                jcd,
+                race,
+                timeout=timeout,
+                allow_live=False,
+            )
+            if not base or not base.get("available"):
+                return
+            detail_payload = fetch_raceresult_payload(date, jcd, race, timeout=timeout)
+            merged = merge_result_weather(base, detail_payload)
+            store_result_payload(date, jcd, race, merged)
+        except Exception:
+            pass
+        finally:
+            with result_enrich_lock:
+                result_enriching.discard(key)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def get_cached_pay_results(date):
     grouped = {}
     with results_cache_lock:
@@ -3125,7 +3225,7 @@ def has_payout_type(payload, payout_type):
     return False
 
 
-def load_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS, include_weather=False):
+def load_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS, include_weather=False, allow_live=True):
     cached = get_cached_result(date, jcd, race)
     if cached and (
         not include_weather
@@ -3135,19 +3235,33 @@ def load_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS, include_weather=
         )
     ):
         return cached
-    pay_payload = get_pay_result(date, jcd, race, timeout=min(timeout, 12))
+    pay_payload = get_pay_result(date, jcd, race, timeout=min(timeout, 12), allow_live=allow_live)
     if pay_payload:
-        if include_weather and (
+        needs_detail = include_weather and (
             not (pay_payload.get("weather") or {}).get("available")
             or not has_payout_type(pay_payload, "2連単")
-        ):
+        )
+        if needs_detail and allow_live:
             try:
                 detail_payload = fetch_raceresult_payload(date, jcd, race, timeout=timeout)
                 pay_payload = merge_result_weather(pay_payload, detail_payload)
                 store_result_payload(date, jcd, race, pay_payload)
             except Exception:
                 pass
+        elif needs_detail:
+            schedule_result_enrich(date, jcd, race)
         return pay_payload
+    if not allow_live:
+        schedule_pay_refresh(date)
+        return {
+            "date": date,
+            "jcd": jcd,
+            "race": race,
+            "available": False,
+            "result": None,
+            "weather": {"available": False},
+            "source": "pending-pay-refresh",
+        }
     payload = fetch_raceresult_payload(date, jcd, race, timeout=timeout)
     store_result_payload(date, jcd, race, payload)
     return payload
@@ -3486,7 +3600,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             return self.send_json({"error": "invalid parameters"}, 400)
         try:
             if parsed.path == "/api/result":
-                self.send_json(load_result(date, jcd, int(race), include_weather=True))
+                allow_live = date != current_jst_date()
+                self.send_json(load_result(date, jcd, int(race), include_weather=True, allow_live=allow_live))
             elif parsed.path == "/api/results":
                 requested_races = []
                 for value in query.get("races", []):
