@@ -2419,7 +2419,6 @@ function renderKorogashiGame(payload) {
     <div class="korogashi-game-stats">
       <span><small>集計日数</small><b>${summary.days}日</b></span>
       <span><small>勝負回数</small><b>${summary.bets}回</b></span>
-      <span><small>的中率</small><b>${summary.hitRate}%</b></span>
       <span><small>最高連勝</small><b>${summary.maxStreak}連勝</b></span>
       <span class="${netClass}"><small>月間収支</small><b>${formatSignedYen(summary.net)}</b></span>
     </div>
@@ -2567,7 +2566,6 @@ function renderResultBoard(payload) {
       <small>${item.label || item.key}${item.points ? `${item.points}点` : ""}</small>
       <strong>${item.available === false ? "未集計" : `${item.hitRaces || 0}本`}</strong>
       <span>当選本数</span>
-      <b>的中率 ${item.hitRate || 0}%</b>
     </article>
   `).join("");
   const winnerRows = (payload.races || []).filter((row) => Array.isArray(row.hits) && row.hits.length);
