@@ -36,6 +36,7 @@ BACKFILL_RANGE_MAX_DAYS_BACK = int(os.environ.get("BOAT_BACKFILL_RANGE_MAX_DAYS_
 BACKGROUND_SYNC_INTERVAL_SECONDS = int(os.environ.get("BOAT_BACKGROUND_SYNC_INTERVAL", "1800"))
 PAY_WARM_INTERVAL_SECONDS = int(os.environ.get("BOAT_PAY_WARM_INTERVAL", "45"))
 TODAY_RECORD_INTERVAL_SECONDS = int(os.environ.get("BOAT_TODAY_RECORD_INTERVAL", "900"))
+RESULT_BOARD_CACHE_SECONDS = int(os.environ.get("BOAT_RESULT_BOARD_CACHE_SECONDS", "20"))
 SIGNALS_CACHE_SECONDS = int(os.environ.get("BOAT_SIGNALS_CACHE_SECONDS", "180"))
 PROGRAM_UNAVAILABLE_CACHE_SECONDS = int(os.environ.get("BOAT_PROGRAM_UNAVAILABLE_CACHE_SECONDS", "5"))
 CACHE_DIR = Path(os.environ.get("BOAT_DATA_DIR", Path(__file__).with_name(".official-cache")))
@@ -82,6 +83,10 @@ warmup_status = {
     "finishedAt": None,
 }
 learning_lock = threading.Lock()
+learning_cache_lock = threading.Lock()
+learning_store_cache = {"mtime": None, "store": None}
+result_board_cache_lock = threading.Lock()
+result_board_cache = {}
 admin_backfill_lock = threading.Lock()
 pay_refresh_lock = threading.Lock()
 pay_refreshing_dates = set()
@@ -116,9 +121,20 @@ admin_backfill_range_cancel = threading.Event()
 
 def read_learning_store():
     try:
-        return json.loads(LEARNING_FILE.read_text(encoding="utf-8"))
+        mtime = LEARNING_FILE.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    with learning_cache_lock:
+        if learning_store_cache["store"] is not None and learning_store_cache["mtime"] == mtime:
+            return learning_store_cache["store"]
+    try:
+        store = json.loads(LEARNING_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {"events": {}, "weights": {}, "updatedAt": None}
+        store = {"events": {}, "weights": {}, "updatedAt": None}
+    with learning_cache_lock:
+        learning_store_cache["mtime"] = mtime
+        learning_store_cache["store"] = store
+    return store
 
 
 def save_learning_store(store):
@@ -126,6 +142,15 @@ def save_learning_store(store):
     temporary = LEARNING_FILE.with_suffix(".tmp")
     temporary.write_text(json.dumps(store, ensure_ascii=False), encoding="utf-8")
     temporary.replace(LEARNING_FILE)
+    try:
+        mtime = LEARNING_FILE.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    with learning_cache_lock:
+        learning_store_cache["mtime"] = mtime
+        learning_store_cache["store"] = store
+    with result_board_cache_lock:
+        result_board_cache.clear()
 
 
 def recompute_learning_weights(events):
@@ -343,21 +368,19 @@ def result_board_strategy_templates():
 def build_result_board(date, jcd):
     venue_index = int(jcd) - 1
     venue = VENUE_NAMES[venue_index] if 0 <= venue_index < len(VENUE_NAMES) else jcd
+    cache_key = f"{date}-{jcd}"
+    now = time.time()
+    with result_board_cache_lock:
+        cached = result_board_cache.get(cache_key)
+        if cached and now - cached.get("savedAt", 0) < RESULT_BOARD_CACHE_SECONDS:
+            return cached["payload"]
     store = read_learning_store()
-    events_by_race = {}
-    for event in (store.get("events") or {}).values():
-        if not isinstance(event, dict):
-            continue
-        if event.get("date") != date or event.get("venue") != venue:
-            continue
-        try:
-            race_number = int(event.get("race") or 0)
-        except (TypeError, ValueError):
-            continue
-        if 1 <= race_number <= 12:
-            current = events_by_race.get(race_number)
-            if not current or str(current.get("savedAt") or "") <= str(event.get("savedAt") or ""):
-                events_by_race[race_number] = event
+    events = store.get("events") or {}
+    events_by_race = {
+        race: events.get(f"{date}-{venue}-{race}")
+        for race in range(1, 13)
+        if isinstance(events.get(f"{date}-{venue}-{race}"), dict)
+    }
 
     templates = result_board_strategy_templates()
     summary = {
@@ -459,7 +482,7 @@ def build_result_board(date, jcd):
         item["roi"] = round(returned / stake * 100) if stake else 0
         if key == "nirentan" and not races:
             item["available"] = False
-    return {
+    payload = {
         "date": date,
         "jcd": jcd,
         "venue": venue,
@@ -467,6 +490,12 @@ def build_result_board(date, jcd):
         "summary": summary,
         "note": "保存済みの予測ログだけで集計しています。当選時は払戻を倍率換算して表示します。",
     }
+    with result_board_cache_lock:
+        result_board_cache[cache_key] = {
+            "savedAt": time.time(),
+            "payload": payload,
+        }
+    return payload
 
 
 def build_korogashi_month(date, jcd):
@@ -1892,13 +1921,19 @@ def record_today_completed_once():
         if not target_races:
             continue
         venue_events = []
-        for race in target_races:
-            try:
-                event = build_admin_backfill_event(date, jcd, race)
-            except Exception:
-                event = None
-            if event:
-                venue_events.append(event)
+        workers = max(1, min(ADMIN_BACKFILL_WORKERS, len(target_races)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(build_admin_backfill_event, date, jcd, race): race
+                for race in target_races
+            }
+            for future in as_completed(futures):
+                try:
+                    event = future.result()
+                except Exception:
+                    event = None
+                if event:
+                    venue_events.append(event)
         if venue_events:
             record_learning_events(venue_events)
             saved += len(venue_events)
@@ -2329,6 +2364,10 @@ def warm_completed_results_once(date=None):
             ]
             if missing_races:
                 load_results(target_date, jcd, missing_races)
+            for race in completed_races:
+                payload = get_stored_result(target_date, jcd, race)
+                if payload and payload.get("available") and not has_payout_type(payload, "2連単"):
+                    schedule_result_enrich(target_date, jcd, race)
         except Exception:
             pass
         time.sleep(0.6)
@@ -3365,6 +3404,10 @@ def load_results(date, jcd, races=None, max_workers=6, timeout=FETCH_TIMEOUT_SEC
                 "weather": {"available": False},
                 "source": "pending-pay-refresh",
             }
+        for race in target_races:
+            payload = results.get(str(race))
+            if payload and payload.get("available") and not has_payout_type(payload, "2連単"):
+                schedule_result_enrich(date, jcd, race)
         return {
             "date": date,
             "jcd": jcd,
@@ -3734,6 +3777,7 @@ if __name__ == "__main__":
         schedule_startup_warmup()
     if os.environ.get("BOAT_RESULT_WARMER", "1") != "0":
         schedule_background_data_sync()
+        schedule_result_warmer()
     if os.environ.get("BOAT_PAY_WARMER", "1") != "0":
         schedule_pay_warmer()
     if os.environ.get("BOAT_AUTO_BACKFILL", "1") != "0":
