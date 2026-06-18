@@ -117,8 +117,8 @@ const RESULT_TIMEOUT_MS = 9000;
 const RESULT_BATCH_TIMEOUT_MS = 16000;
 const STRATEGY_CONFIG = {
   honmei: { label: "本命", count: 5 },
-  nerai: { label: "狙い目", count: 1 },
-  ana: { label: "穴", count: 1 }
+  nerai: { label: "狙い目", count: 3 },
+  ana: { label: "穴", count: 3 }
 };
 const BET_MODE_CONFIG = {
   kenjitsu: { label: "堅実", strategyKeys: ["honmei"] },
@@ -497,7 +497,7 @@ function applyPlanMode() {
       lock.innerHTML = `
         <span>PREMIUM</span>
         <strong>プレミアムで開放</strong>
-        <p>本命5点・狙い目1点・穴1点、成績分析・展示後再計算を利用できます。</p>
+        <p>本命5点・狙い目3点・穴3点、成績分析・展示後再計算を利用できます。</p>
         <a href="#plans">プランを見る</a>
       `;
       section.append(lock);
@@ -2099,10 +2099,10 @@ function buildBetDecision(data, groups = buildTicketStrategyGroups(data), race =
     return { key: "miokuri", label: "見送り", buy: false, strategyKeys: [], text: "期待値が低く、買うほど回収率を削りやすいレースです。" };
   }
   if (topAna && tendency.upset >= 66 && topAna.estimatedOdds >= 25 && laneOne?.probability < 30 && topAna.valueScore >= 88) {
-    return { key: "ana", label: "穴狙い", buy: true, strategyKeys: BET_MODE_CONFIG.ana.strategyKeys, text: `穴気配${Math.round(tendency.upset)}。高配当候補を穴1点だけに絞る判断です。` };
+    return { key: "ana", label: "穴狙い", buy: true, strategyKeys: BET_MODE_CONFIG.ana.strategyKeys, text: `穴気配${Math.round(tendency.upset)}。高配当候補を穴3点で狙う判断です。` };
   }
   if (best.valueScore >= 115 && positiveCount >= 1 && waterRisk <= 10) {
-    return { key: "shobu", label: "勝負", buy: true, strategyKeys: BET_MODE_CONFIG.shobu.strategyKeys, text: `期待値${best.valueScore.toFixed(0)}、妙味候補${positiveCount}点。本命5点＋狙い目1点で勝負します。` };
+    return { key: "shobu", label: "勝負", buy: true, strategyKeys: BET_MODE_CONFIG.shobu.strategyKeys, text: `期待値${best.valueScore.toFixed(0)}、妙味候補${positiveCount}点。本命5点＋狙い目3点で勝負します。` };
   }
   if (topHonmei && laneOne?.probability >= 30 && tendency.solid >= 60 && leaderGap >= 6 && waterRisk <= 10 && topHonmei.estimatedOdds >= 2.5) {
     return { key: "kenjitsu", label: "堅実", buy: true, strategyKeys: BET_MODE_CONFIG.kenjitsu.strategyKeys, text: `堅め度${Math.round(tendency.solid)}。本命5点だけで相手を絞るレースです。` };
@@ -2133,7 +2133,7 @@ function renderValuePicks(data) {
     <article class="value-pick locked-pick">
       <span class="value-rank">PREMIUM</span>
       <strong>残り2点を開放</strong>
-      <p>本命5点・狙い目1点・穴1点、公式オッズ反映・展示後の再計算はプレミアムで利用できます。</p>
+      <p>本命5点・狙い目3点・穴3点、公式オッズ反映・展示後の再計算はプレミアムで利用できます。</p>
       <a href="#plans">プランを見る</a>
     </article>
   ` : "");
@@ -2565,8 +2565,9 @@ function renderResultBoard(payload) {
   summary.innerHTML = items.map((item) => `
     <article class="result-board-stat ${item.available === false ? "disabled" : item.key}">
       <small>${item.label || item.key}${item.points ? `${item.points}点` : ""}</small>
-      <strong>${item.available === false ? "未集計" : `${item.roi || 0}%`}</strong>
-      <span>回収率</span>
+      <strong>${item.available === false ? "未集計" : `${item.hitRaces || 0}本`}</strong>
+      <span>当選本数</span>
+      <b>的中率 ${item.hitRate || 0}%</b>
     </article>
   `).join("");
   const winnerRows = (payload.races || []).filter((row) => Array.isArray(row.hits) && row.hits.length);
@@ -2771,9 +2772,9 @@ function renderDailyPerformance(options = {}) {
     ? "結果取得中"
     : totals.judged ? "判定済み" : "未判定";
   document.querySelector("#dailyPerformanceNote").textContent =
-    `対象は${formatDate(dateInput.value)} ${venues[Number(venueSelect.value)].name}。3連単は本命5点・狙い目1点・穴1点の合計7点で集計します。`;
+    `対象は${formatDate(dateInput.value)} ${venues[Number(venueSelect.value)].name}。3連単は本命5点・狙い目3点・穴3点の合計11点で集計します。`;
   document.querySelector("#simulatedProfitNote").textContent =
-    `判定済み${totals.judged}レースで、本命だけは5点、狙い目だけ・穴だけは各1点を${PERFORMANCE_BET_UNIT_YEN}円ずつ購入した場合の仮想収支です。払戻は公式3連単の100円あたり払戻で計算しています。`;
+    `判定済み${totals.judged}レースで、本命だけは5点、狙い目だけ・穴だけは各3点を${PERFORMANCE_BET_UNIT_YEN}円ずつ購入した場合の仮想収支です。払戻は公式3連単の100円あたり払戻で計算しています。`;
   loadKorogashiMonth();
   saveLearningLog(totals.rows)
     .then(() => {

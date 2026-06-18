@@ -1323,14 +1323,24 @@ def build_server_prediction_picks(racers, signals):
     solid = sorted(tickets, key=lambda item: (-item["baseScore"], item["ticket"]))[:5]
     solid_keys = {tuple(item["ticket"]) for item in solid}
     value_candidates = [item for item in tickets if tuple(item["ticket"]) not in solid_keys]
-    nerai = sorted(value_candidates, key=lambda item: (-item["valueScore"], item["ticket"]))[:1]
+    nerai = sorted(value_candidates, key=lambda item: (-item["valueScore"], item["ticket"]))[:3]
     used_keys = solid_keys | {tuple(item["ticket"]) for item in nerai}
-    ana_candidates = [
-        item for item in tickets
-        if tuple(item["ticket"]) not in used_keys
-        and (item["actualOdds"] or 0) >= 30
-    ] or [item for item in tickets if tuple(item["ticket"]) not in used_keys]
-    ana = sorted(ana_candidates, key=lambda item: (-(item["actualOdds"] or 0), -item["valueScore"], item["ticket"]))[:1]
+    ana_primary = sorted(
+        [
+            item for item in tickets
+            if tuple(item["ticket"]) not in used_keys
+            and (item["actualOdds"] or 0) >= 30
+        ],
+        key=lambda item: (-(item["actualOdds"] or 0), -item["valueScore"], item["ticket"]),
+    )
+    ana = ana_primary[:3]
+    if len(ana) < 3:
+        ana_used = used_keys | {tuple(item["ticket"]) for item in ana}
+        ana_filler = sorted(
+            [item for item in tickets if tuple(item["ticket"]) not in ana_used],
+            key=lambda item: (-(item["actualOdds"] or 0), -item["valueScore"], item["ticket"]),
+        )
+        ana = ana + ana_filler[: 3 - len(ana)]
     groups = [
         ("honmei", "本命", solid),
         ("nerai", "狙い目", nerai),
@@ -1466,7 +1476,10 @@ def build_admin_backfill_event(
         pick.get("ticket") and pick["ticket"][0] == result["result"][0]
         for pick in picks
     )
-    weather = ((signals.get("beforeinfo") or {}).get("weather") or result_payload.get("weather") or {})
+    weather = choose_weather(
+        (signals.get("beforeinfo") or {}).get("weather"),
+        result_payload.get("weather"),
+    )
     bet_decision = normalize_bet_decision({
         "wind": weather.get("windSpeed"),
         "wave": weather.get("waveHeight"),
@@ -2928,35 +2941,37 @@ def parse_beforeinfo(html_text):
 
 
 def parse_weather(html_text):
-    start = html_text.find('<div class="weather1">')
-    if start < 0:
+    start_match = re.search(r'<div[^>]*class="[^"]*\bweather1\b[^"]*"[^>]*>', html_text)
+    if not start_match:
         return {"available": False}
-    end = html_text.find('<div class="weather1_stand">', start)
+    start = start_match.start()
+    end_match = re.search(r'<div[^>]*class="[^"]*\bweather1_stand\b[^"]*"[^>]*>', html_text[start:])
+    end = start + end_match.start() if end_match else -1
     block = html_text[start:end if end >= 0 else start + 5000]
     observed_match = re.search(r"水面気象情報\s*([0-9:]+)現在", strip_tags(block))
     direction_match = re.search(r"is-direction(\d+)", block)
     weather_match = re.search(
-        r'is-weather">.*?weather1_bodyUnitLabelTitle">([^<]+)</span>',
+        r'is-weather[^"]*">.*?weather1_bodyUnitLabelTitle">([^<]+)</span>',
         block,
         re.S,
     )
     wind_match = re.search(
-        r'is-wind">.*?weather1_bodyUnitLabelData">([^<]+)</span>',
+        r'is-wind[^"]*">.*?weather1_bodyUnitLabelData">([^<]+)</span>',
         block,
         re.S,
     )
     temperature_match = re.search(
-        r'is-direction">.*?weather1_bodyUnitLabelData">([^<]+)</span>',
+        r'is-temperature[^"]*">.*?weather1_bodyUnitLabelData">([^<]+)</span>',
         block,
         re.S,
     )
     water_temperature_match = re.search(
-        r'is-waterTemperature">.*?weather1_bodyUnitLabelData">([^<]+)</span>',
+        r'is-waterTemperature[^"]*">.*?weather1_bodyUnitLabelData">([^<]+)</span>',
         block,
         re.S,
     )
     wave_match = re.search(
-        r'is-wave">.*?weather1_bodyUnitLabelData">([^<]+)</span>',
+        r'is-wave[^"]*">.*?weather1_bodyUnitLabelData">([^<]+)</span>',
         block,
         re.S,
     )
@@ -3216,6 +3231,29 @@ def merge_result_weather(primary, detail):
         merged["payouts"] = detail["payouts"]
     merged["source"] = f"{primary.get('source') or 'result'}+raceresult-weather"
     return merged
+
+
+def is_weather_available(weather):
+    if not isinstance(weather, dict):
+        return False
+    if weather.get("available"):
+        return True
+    return any(
+        weather.get(key) not in (None, "")
+        for key in ("weather", "temperature", "windSpeed", "windDirection", "waveHeight")
+    )
+
+
+def choose_weather(*candidates):
+    fallback = {}
+    for weather in candidates:
+        if not isinstance(weather, dict):
+            continue
+        if not fallback:
+            fallback = weather
+        if is_weather_available(weather):
+            return weather
+    return fallback
 
 
 def has_payout_type(payload, payout_type):
