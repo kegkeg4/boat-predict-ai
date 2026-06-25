@@ -27,7 +27,19 @@ FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_FETCH_TIMEOUT", "8"))
 PROGRAM_INDEX_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PROGRAM_INDEX_TIMEOUT", "14"))
 DETAIL_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_DETAIL_FETCH_TIMEOUT", "3"))
 CACHE_FLUSH_INTERVAL_SECONDS = int(os.environ.get("BOAT_CACHE_FLUSH_INTERVAL", "30"))
-ADMIN_BACKFILL_WORKERS = int(os.environ.get("BOAT_ADMIN_BACKFILL_WORKERS", "4"))
+FETCH_MEMORY_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_FETCH_MEMORY_CACHE_MAX_ENTRIES", "300"))
+FETCH_LOCKS_MAX_ENTRIES = int(os.environ.get("BOAT_FETCH_LOCKS_MAX_ENTRIES", "1000"))
+HTML_CACHE_MAX_AGE_SECONDS = int(os.environ.get("BOAT_HTML_CACHE_MAX_AGE_SECONDS", str(14 * 24 * 60 * 60)))
+HTML_CACHE_CLEANUP_INTERVAL_SECONDS = int(os.environ.get("BOAT_HTML_CACHE_CLEANUP_INTERVAL", str(6 * 60 * 60)))
+HTML_CACHE_MAX_FILES = int(os.environ.get("BOAT_HTML_CACHE_MAX_FILES", "2500"))
+LEARNING_MEMORY_CACHE_MAX_BYTES = int(os.environ.get("BOAT_LEARNING_MEMORY_CACHE_MAX_BYTES", str(5 * 1024 * 1024)))
+ADMIN_BACKFILL_WORKERS = int(os.environ.get("BOAT_ADMIN_BACKFILL_WORKERS", "2"))
+RESULT_FETCH_WORKERS = int(os.environ.get("BOAT_RESULT_FETCH_WORKERS", "2"))
+VENUE_FALLBACK_WORKERS = int(os.environ.get("BOAT_VENUE_FALLBACK_WORKERS", "4"))
+PROGRAM_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_PROGRAM_CACHE_MAX_ENTRIES", "1200"))
+RESULTS_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_RESULTS_CACHE_MAX_ENTRIES", "1200"))
+SIGNALS_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_SIGNALS_CACHE_MAX_ENTRIES", "5000"))
+WORKER_STATUS_LOG_SECONDS = int(os.environ.get("BOAT_WORKER_STATUS_LOG_SECONDS", "300"))
 ADMIN_BACKFILL_RESULT_TIMEOUT = float(os.environ.get("BOAT_ADMIN_RESULT_TIMEOUT", "16"))
 ADMIN_BACKFILL_SIGNAL_TIMEOUT = float(os.environ.get("BOAT_ADMIN_SIGNAL_TIMEOUT", "2"))
 BACKFILL_RANGE_GAP_SECONDS = float(os.environ.get("BOAT_BACKFILL_RANGE_GAP_SECONDS", "5"))
@@ -57,7 +69,9 @@ VENUE_NAMES = [
 ]
 MANFUNE_YEN = 10000
 cache = {}
+cache_lock = threading.Lock()
 fetch_locks = {}
+fetch_lock_access = {}
 fetch_locks_guard = threading.Lock()
 program_cache_lock = threading.Lock()
 venue_status_cache_lock = threading.Lock()
@@ -92,6 +106,9 @@ pay_refresh_lock = threading.Lock()
 pay_refreshing_dates = set()
 result_enrich_lock = threading.Lock()
 result_enriching = set()
+worker_activity_lock = threading.Lock()
+worker_activity = {}
+worker_last_log = {}
 admin_backfill_status = {
     "active": False,
     "rangeActive": False,
@@ -119,21 +136,112 @@ admin_backfill_done = set()
 admin_backfill_range_cancel = threading.Event()
 
 
+def current_rss_mb():
+    try:
+        status = Path("/proc/self/status").read_text(encoding="utf-8")
+        match = re.search(r"^VmRSS:\s+(\d+)\s+kB", status, re.MULTILINE)
+        if match:
+            return round(int(match.group(1)) / 1024, 1)
+    except Exception:
+        pass
+    try:
+        import resource
+        value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if value > 10_000_000:
+            return round(value / (1024 * 1024), 1)
+        return round(value / 1024, 1)
+    except Exception:
+        return None
+
+
+def runtime_sizes_snapshot():
+    try:
+        learning_size = LEARNING_FILE.stat().st_size
+    except OSError:
+        learning_size = 0
+    with cache_lock:
+        html_memory_entries = len(cache)
+    with fetch_locks_guard:
+        fetch_lock_entries = len(fetch_locks)
+    with program_cache_lock:
+        program_entries = len(program_cache) if "program_cache" in globals() else 0
+    with results_cache_lock:
+        result_entries = len(results_cache)
+    with signals_cache_lock:
+        signal_entries = len(signals_cache)
+    with worker_activity_lock:
+        workers = {key: value for key, value in worker_activity.items() if value}
+    return {
+        "rssMb": current_rss_mb(),
+        "learningMb": round(learning_size / (1024 * 1024), 2),
+        "htmlMemory": html_memory_entries,
+        "fetchLocks": fetch_lock_entries,
+        "programCache": program_entries,
+        "resultsCache": result_entries,
+        "signalsCache": signal_entries,
+        "workers": workers,
+    }
+
+
+def log_runtime_status(label, force=False):
+    if os.environ.get("BOAT_RUNTIME_LOG", "1") == "0":
+        return
+    now = time.time()
+    if not force:
+        last = worker_last_log.get(label, 0)
+        if now - last < WORKER_STATUS_LOG_SECONDS:
+            return
+    worker_last_log[label] = now
+    snapshot = runtime_sizes_snapshot()
+    print(
+        "[runtime]",
+        datetime.now(JST).isoformat(timespec="seconds"),
+        label,
+        json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
+
+
+def mark_worker_start(name):
+    with worker_activity_lock:
+        worker_activity[name] = worker_activity.get(name, 0) + 1
+    log_runtime_status(f"{name}:start", force=True)
+
+
+def mark_worker_end(name):
+    with worker_activity_lock:
+        current = worker_activity.get(name, 0)
+        if current <= 1:
+            worker_activity.pop(name, None)
+        else:
+            worker_activity[name] = current - 1
+    log_runtime_status(f"{name}:end", force=True)
+
+
 def read_learning_store():
     try:
-        mtime = LEARNING_FILE.stat().st_mtime_ns
+        stat = LEARNING_FILE.stat()
+        mtime = stat.st_mtime_ns
+        size = stat.st_size
     except OSError:
         mtime = None
-    with learning_cache_lock:
-        if learning_store_cache["store"] is not None and learning_store_cache["mtime"] == mtime:
-            return learning_store_cache["store"]
+        size = 0
+    cacheable = bool(LEARNING_MEMORY_CACHE_MAX_BYTES and size <= LEARNING_MEMORY_CACHE_MAX_BYTES)
+    if cacheable:
+        with learning_cache_lock:
+            if learning_store_cache["store"] is not None and learning_store_cache["mtime"] == mtime:
+                return learning_store_cache["store"]
     try:
         store = json.loads(LEARNING_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         store = {"events": {}, "weights": {}, "updatedAt": None}
     with learning_cache_lock:
-        learning_store_cache["mtime"] = mtime
-        learning_store_cache["store"] = store
+        if cacheable:
+            learning_store_cache["mtime"] = mtime
+            learning_store_cache["store"] = store
+        else:
+            learning_store_cache["mtime"] = None
+            learning_store_cache["store"] = None
     return store
 
 
@@ -143,14 +251,47 @@ def save_learning_store(store):
     temporary.write_text(json.dumps(store, ensure_ascii=False), encoding="utf-8")
     temporary.replace(LEARNING_FILE)
     try:
-        mtime = LEARNING_FILE.stat().st_mtime_ns
+        stat = LEARNING_FILE.stat()
+        mtime = stat.st_mtime_ns
+        size = stat.st_size
     except OSError:
         mtime = None
+        size = 0
     with learning_cache_lock:
-        learning_store_cache["mtime"] = mtime
-        learning_store_cache["store"] = store
+        if LEARNING_MEMORY_CACHE_MAX_BYTES and size <= LEARNING_MEMORY_CACHE_MAX_BYTES:
+            learning_store_cache["mtime"] = mtime
+            learning_store_cache["store"] = store
+        else:
+            learning_store_cache["mtime"] = None
+            learning_store_cache["store"] = None
     with result_board_cache_lock:
         result_board_cache.clear()
+
+
+def prune_saved_at_mapping(mapping, max_entries):
+    if not max_entries or len(mapping) <= max_entries:
+        return
+    removable = sorted(
+        mapping,
+        key=lambda key: (mapping.get(key) or {}).get("savedAt", 0),
+    )[: len(mapping) - max_entries]
+    for key in removable:
+        mapping.pop(key, None)
+
+
+def prune_fetch_locks():
+    if not FETCH_LOCKS_MAX_ENTRIES or len(fetch_locks) <= FETCH_LOCKS_MAX_ENTRIES:
+        return
+    overflow = len(fetch_locks) - FETCH_LOCKS_MAX_ENTRIES
+    for key in sorted(fetch_lock_access, key=fetch_lock_access.get):
+        lock = fetch_locks.get(key)
+        if lock is None or lock.locked():
+            continue
+        fetch_locks.pop(key, None)
+        fetch_lock_access.pop(key, None)
+        overflow -= 1
+        if overflow <= 0:
+            break
 
 
 def recompute_learning_weights(events):
@@ -1541,6 +1682,7 @@ def build_admin_backfill_event(
 
 
 def run_admin_backfill(date, force=False):
+    mark_worker_start("admin_backfill")
     update_admin_backfill_status(
         active=True,
         date=date,
@@ -1587,12 +1729,13 @@ def run_admin_backfill(date, force=False):
                     date,
                     jcd,
                     race_numbers,
-                    max_workers=2,
+                    max_workers=RESULT_FETCH_WORKERS,
                     timeout=ADMIN_BACKFILL_RESULT_TIMEOUT,
                 )
             except Exception:
                 pass
             workers = max(1, min(ADMIN_BACKFILL_WORKERS, len(race_numbers)))
+            log_runtime_status(f"admin_backfill:{venue}:workers={workers}:races={len(race_numbers)}", force=True)
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {
                     executor.submit(build_admin_backfill_event, date, jcd, race): race
@@ -1629,6 +1772,8 @@ def run_admin_backfill(date, force=False):
             finishedAt=datetime.now(JST).isoformat(timespec="seconds"),
             message=f"集計エラー: {error}",
         )
+    finally:
+        mark_worker_end("admin_backfill")
 
 
 def schedule_admin_backfill(date, force=False):
@@ -1894,54 +2039,59 @@ def record_today_completed_once():
     )
     if not active_jcds:
         return 0
+    mark_worker_start("today_record")
     existing_keys = existing_learning_keys()
     saved = 0
-    for jcd in active_jcds:
-        with admin_backfill_lock:
-            if admin_backfill_status.get("active") or admin_backfill_status.get("rangeActive"):
-                break
-        try:
-            venue = VENUE_NAMES[int(jcd) - 1]
-        except (TypeError, ValueError, IndexError):
-            continue
-        try:
-            program = load_program(date, jcd, 1, should_prefetch=False)
-        except Exception:
-            continue
-        target_races = []
-        for race_info in program.get("races", []):
-            race = race_info.get("race")
-            if not race:
+    try:
+        for jcd in active_jcds:
+            with admin_backfill_lock:
+                if admin_backfill_status.get("active") or admin_backfill_status.get("rangeActive"):
+                    break
+            try:
+                venue = VENUE_NAMES[int(jcd) - 1]
+            except (TypeError, ValueError, IndexError):
                 continue
-            if not is_server_race_completed(date, race_info.get("cutoff")):
+            try:
+                program = load_program(date, jcd, 1, should_prefetch=False)
+            except Exception:
                 continue
-            if f"{date}-{venue}-{race}" in existing_keys:
+            target_races = []
+            for race_info in program.get("races", []):
+                race = race_info.get("race")
+                if not race:
+                    continue
+                if not is_server_race_completed(date, race_info.get("cutoff")):
+                    continue
+                if f"{date}-{venue}-{race}" in existing_keys:
+                    continue
+                target_races.append(race)
+            if not target_races:
                 continue
-            target_races.append(race)
-        if not target_races:
-            continue
-        venue_events = []
-        workers = max(1, min(ADMIN_BACKFILL_WORKERS, len(target_races)))
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                executor.submit(build_admin_backfill_event, date, jcd, race): race
-                for race in target_races
-            }
-            for future in as_completed(futures):
-                try:
-                    event = future.result()
-                except Exception:
-                    event = None
-                if event:
-                    venue_events.append(event)
-        if venue_events:
-            record_learning_events(venue_events)
-            saved += len(venue_events)
-            existing_keys.update(
-                event["key"] for event in venue_events if event.get("key")
-            )
-        time.sleep(1.0)
-    return saved
+            log_runtime_status(f"today_record:{venue}:races={len(target_races)}", force=True)
+            venue_events = []
+            workers = max(1, min(ADMIN_BACKFILL_WORKERS, len(target_races)))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(build_admin_backfill_event, date, jcd, race): race
+                    for race in target_races
+                }
+                for future in as_completed(futures):
+                    try:
+                        event = future.result()
+                    except Exception:
+                        event = None
+                    if event:
+                        venue_events.append(event)
+            if venue_events:
+                record_learning_events(venue_events)
+                saved += len(venue_events)
+                existing_keys.update(
+                    event["key"] for event in venue_events if event.get("key")
+                )
+            time.sleep(1.0)
+        return saved
+    finally:
+        mark_worker_end("today_record")
 
 
 def admin_auto_backfill_worker():
@@ -1964,7 +2114,9 @@ def schedule_admin_auto_backfill():
 
 def read_program_cache():
     try:
-        return json.loads(PROGRAM_CACHE_FILE.read_text(encoding="utf-8"))
+        payload = json.loads(PROGRAM_CACHE_FILE.read_text(encoding="utf-8"))
+        prune_saved_at_mapping(payload, PROGRAM_CACHE_MAX_ENTRIES)
+        return payload
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
 
@@ -1992,7 +2144,9 @@ venue_status_cache.update(read_schedule_cache())
 
 def read_results_cache():
     try:
-        return json.loads(RESULTS_CACHE_FILE.read_text(encoding="utf-8"))
+        payload = json.loads(RESULTS_CACHE_FILE.read_text(encoding="utf-8"))
+        prune_saved_at_mapping(payload, RESULTS_CACHE_MAX_ENTRIES)
+        return payload
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
 
@@ -2058,6 +2212,7 @@ def store_result_payload(date, jcd, race, payload):
                 "results": merged_results,
             },
         }
+        prune_saved_at_mapping(results_cache, RESULTS_CACHE_MAX_ENTRIES)
     save_results_cache()
 
 
@@ -2066,7 +2221,9 @@ results_cache.update(read_results_cache())
 
 def read_signals_cache():
     try:
-        return json.loads(SIGNALS_CACHE_FILE.read_text(encoding="utf-8"))
+        payload = json.loads(SIGNALS_CACHE_FILE.read_text(encoding="utf-8"))
+        prune_saved_at_mapping(payload, SIGNALS_CACHE_MAX_ENTRIES)
+        return payload
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
 
@@ -2105,6 +2262,7 @@ def store_signals_payload(date, jcd, race, payload):
             "savedAt": time.time(),
             "payload": payload,
         }
+        prune_saved_at_mapping(signals_cache, SIGNALS_CACHE_MAX_ENTRIES)
     save_signals_cache()
 
 
@@ -2129,6 +2287,7 @@ def request_cache_save(name):
 def flush_cache_file(name):
     if name == "program":
         with program_cache_lock:
+            prune_saved_at_mapping(program_cache, PROGRAM_CACHE_MAX_ENTRIES)
             snapshot = dict(program_cache)
         write_json_atomic(PROGRAM_CACHE_FILE, snapshot)
     elif name == "schedule":
@@ -2137,10 +2296,12 @@ def flush_cache_file(name):
         write_json_atomic(SCHEDULE_CACHE_FILE, snapshot)
     elif name == "results":
         with results_cache_lock:
+            prune_saved_at_mapping(results_cache, RESULTS_CACHE_MAX_ENTRIES)
             snapshot = dict(results_cache)
         write_json_atomic(RESULTS_CACHE_FILE, snapshot)
     elif name == "signals":
         with signals_cache_lock:
+            prune_saved_at_mapping(signals_cache, SIGNALS_CACHE_MAX_ENTRIES)
             snapshot = dict(signals_cache)
         write_json_atomic(SIGNALS_CACHE_FILE, snapshot)
 
@@ -2165,6 +2326,53 @@ def cache_flush_worker():
 
 def schedule_cache_flush_worker():
     thread = threading.Thread(target=cache_flush_worker, daemon=True)
+    thread.start()
+
+
+def cleanup_html_cache_once():
+    if not HTML_CACHE_MAX_AGE_SECONDS and not HTML_CACHE_MAX_FILES:
+        return 0
+    try:
+        files = list(CACHE_DIR.glob("*.html"))
+    except OSError:
+        return 0
+    now = time.time()
+    removed = 0
+    survivors = []
+    for path in files:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if HTML_CACHE_MAX_AGE_SECONDS and now - stat.st_mtime > HTML_CACHE_MAX_AGE_SECONDS:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+        else:
+            survivors.append((stat.st_mtime, path))
+    if HTML_CACHE_MAX_FILES and len(survivors) > HTML_CACHE_MAX_FILES:
+        for _, path in sorted(survivors)[: len(survivors) - HTML_CACHE_MAX_FILES]:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
+def html_cache_cleanup_worker():
+    while True:
+        try:
+            cleanup_html_cache_once()
+        except Exception:
+            pass
+        time.sleep(max(60, HTML_CACHE_CLEANUP_INTERVAL_SECONDS))
+
+
+def schedule_html_cache_cleanup_worker():
+    thread = threading.Thread(target=html_cache_cleanup_worker, daemon=True)
     thread.start()
 
 
@@ -2375,17 +2583,24 @@ def warm_completed_results_once(date=None):
 
 def result_warmer_worker():
     while True:
-        for offset in (-1, 0):
-            warm_completed_results_once(jst_date_offset(offset))
+        mark_worker_start("result_warmer")
+        try:
+            for offset in (-1, 0):
+                warm_completed_results_once(jst_date_offset(offset))
+        finally:
+            mark_worker_end("result_warmer")
         time.sleep(BACKGROUND_SYNC_INTERVAL_SECONDS)
 
 
 def pay_warmer_worker():
     while True:
+        mark_worker_start("pay_warmer")
         try:
             load_pay_results(current_jst_date(), timeout=min(FETCH_TIMEOUT_SECONDS, 8))
         except Exception:
             pass
+        finally:
+            mark_worker_end("pay_warmer")
         time.sleep(max(20, PAY_WARM_INTERVAL_SECONDS))
 
 
@@ -2426,7 +2641,11 @@ def background_data_sync_once():
 
 def background_data_sync_worker():
     while True:
-        background_data_sync_once()
+        mark_worker_start("background_sync")
+        try:
+            background_data_sync_once()
+        finally:
+            mark_worker_end("background_sync")
         time.sleep(BACKGROUND_SYNC_INTERVAL_SECONDS)
 
 
@@ -2447,24 +2666,51 @@ def schedule_pay_warmer():
 
 def get_fetch_lock(path):
     with fetch_locks_guard:
-        return fetch_locks.setdefault(path, threading.Lock())
+        lock = fetch_locks.get(path)
+        if lock is None:
+            prune_fetch_locks()
+            lock = fetch_locks.setdefault(path, threading.Lock())
+        fetch_lock_access[path] = time.time()
+        return lock
+
+
+def get_memory_cached_html(path, cache_seconds):
+    if cache_seconds <= 0:
+        return None
+    with cache_lock:
+        cached = cache.get(path)
+    if cached and time.time() - cached[0] < cache_seconds:
+        return cached[1]
+    return None
+
+
+def remember_memory_cached_html(path, text, cache_seconds):
+    if cache_seconds <= 0 or not FETCH_MEMORY_CACHE_MAX_ENTRIES:
+        return
+    with cache_lock:
+        cache[path] = (time.time(), text)
+        overflow = len(cache) - FETCH_MEMORY_CACHE_MAX_ENTRIES
+        if overflow > 0:
+            oldest_keys = sorted(cache, key=lambda key: cache[key][0])[:overflow]
+            for key in oldest_keys:
+                cache.pop(key, None)
 
 
 def fetch_html(path, cache_seconds=CACHE_SECONDS, timeout=FETCH_TIMEOUT_SECONDS):
-    cached = cache.get(path)
-    if cached and time.time() - cached[0] < cache_seconds:
-        return cached[1]
+    cached = get_memory_cached_html(path, cache_seconds)
+    if cached:
+        return cached
     with get_fetch_lock(path):
-        cached = cache.get(path)
-        if cached and time.time() - cached[0] < cache_seconds:
-            return cached[1]
+        cached = get_memory_cached_html(path, cache_seconds)
+        if cached:
+            return cached
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cache_file = CACHE_DIR / f"{hashlib.sha256(path.encode()).hexdigest()}.html"
         stale_text = None
         if cache_file.exists():
             stale_text = cache_file.read_text(encoding="utf-8")
             if time.time() - cache_file.stat().st_mtime < cache_seconds:
-                cache[path] = (time.time(), stale_text)
+                remember_memory_cached_html(path, stale_text, cache_seconds)
                 return stale_text
         request = Request(f"{OFFICIAL_BASE}{path}", headers={"User-Agent": USER_AGENT})
         try:
@@ -2472,10 +2718,10 @@ def fetch_html(path, cache_seconds=CACHE_SECONDS, timeout=FETCH_TIMEOUT_SECONDS)
                 text = response.read().decode("utf-8", errors="replace")
         except Exception:
             if stale_text and cache_seconds > 0:
-                cache[path] = (time.time(), stale_text)
+                remember_memory_cached_html(path, stale_text, cache_seconds)
                 return stale_text
             raise
-        cache[path] = (time.time(), text)
+        remember_memory_cached_html(path, text, cache_seconds)
         cache_file.write_text(text, encoding="utf-8")
         return text
 
@@ -3199,6 +3445,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
                     "savedAt": time.time(),
                     "payload": payload,
                 }
+                prune_saved_at_mapping(program_cache, PROGRAM_CACHE_MAX_ENTRIES)
             save_program_cache()
         return payload
 
@@ -3233,6 +3480,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
             "savedAt": time.time(),
             "payload": payload,
         }
+        prune_saved_at_mapping(program_cache, PROGRAM_CACHE_MAX_ENTRIES)
     save_program_cache()
     if should_prefetch:
         schedule_program_prefetch(date, jcd)
@@ -3356,7 +3604,7 @@ def normalize_race_list(races):
     return normalized or list(range(1, 13))
 
 
-def load_results(date, jcd, races=None, max_workers=6, timeout=FETCH_TIMEOUT_SECONDS):
+def load_results(date, jcd, races=None, max_workers=RESULT_FETCH_WORKERS, timeout=FETCH_TIMEOUT_SECONDS):
     target_races = normalize_race_list(races)
     cache_key = f"{date}-{jcd}"
     if date <= current_jst_date():
@@ -3518,7 +3766,7 @@ def load_venues_status(date):
         pass
     venues_status = {}
     now = time.time()
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=VENUE_FALLBACK_WORKERS) as executor:
         futures = {}
         for jcd in BOATRACE_JCDS:
             program_key = f"{date}-{jcd}"
@@ -3773,6 +4021,8 @@ if __name__ == "__main__":
     print(f"BOAT PREDICT AI: http://127.0.0.1:{port}/")
     print(f"SMARTPHONE URL: http://{local_ip}:{port}/")
     schedule_cache_flush_worker()
+    if os.environ.get("BOAT_HTML_CACHE_CLEANUP", "1") != "0":
+        schedule_html_cache_cleanup_worker()
     if os.environ.get("BOAT_STARTUP_WARMUP", "1") != "0":
         schedule_startup_warmup()
     if os.environ.get("BOAT_RESULT_WARMER", "1") != "0":
