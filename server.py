@@ -172,6 +172,8 @@ admin_backfill_status = {
 admin_backfill_done = set()
 admin_backfill_range_cancel = threading.Event()
 racer_profile_done = set()
+racer_profile_rebuild_lock = threading.Lock()
+racer_profile_rebuild_active = False
 
 
 def current_rss_mb():
@@ -425,9 +427,63 @@ def learning_event_fingerprint(event):
     return json.dumps(comparable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def racer_history_record_from_event(event):
+    if not isinstance(event, dict):
+        return "", None
+    key = learning_event_history_key(event)
+    if not key:
+        return "", None
+    date = str(event.get("date") or "")
+    result_list = event.get("result")
+    racers = event.get("racers") if isinstance(event.get("racers"), list) else []
+    if not date or not isinstance(result_list, list) or len(result_list) < 3 or not racers:
+        return key, None
+    rows = []
+    for racer in racers:
+        if not isinstance(racer, dict):
+            continue
+        toban = racer.get("registration")
+        lane = racer.get("boat")
+        finish = _finish_position(lane, result_list)
+        if not toban or finish is None:
+            continue
+        try:
+            lane = int(lane)
+        except (TypeError, ValueError):
+            continue
+        rows.append([str(toban), lane, finish])
+    if not rows:
+        return key, None
+    return key, {"d": date, "r": rows}
+
+
+def record_racer_history_from_events(events):
+    if not isinstance(events, list):
+        return 0
+    records = {}
+    for event in events:
+        key, record = racer_history_record_from_event(event)
+        if key and record:
+            records[key] = record
+    if not records:
+        return 0
+    history = read_racer_history()
+    changed = 0
+    for key, record in records.items():
+        if history.get(key) == record:
+            continue
+        history[key] = record
+        changed += 1
+    if changed:
+        write_racer_history(history)
+        log_runtime_status(f"racer_history:updated:{changed}", force=True)
+    return changed
+
+
 def record_learning_events(events):
     if not isinstance(events, list):
         return {"error": "events must be list"}
+    changed_events = []
     with learning_lock:
         store = read_learning_store()
         stored_events = store.setdefault("events", {})
@@ -460,10 +516,14 @@ def record_learning_events(events):
                     continue
             stored_events[key] = event
             changed = True
+            changed_events.append(event)
         if changed:
             store["weights"] = recompute_learning_weights(stored_events)
             store["updatedAt"] = datetime.now(JST).isoformat(timespec="seconds")
             save_learning_store(store)
+    if changed_events:
+        record_racer_history_from_events(changed_events)
+        schedule_racer_profile_rebuild(f"learning:{len(changed_events)}")
     return get_learning()
 
 
@@ -2785,6 +2845,98 @@ def rebuild_racer_profiles():
     return len(built)
 
 
+def schedule_racer_profile_rebuild(reason="manual"):
+    global racer_profile_rebuild_active
+    if os.environ.get("BOAT_RACER_PROFILE_AUTO_REBUILD", "1") == "0":
+        return {"scheduled": False, "active": False, "reason": "disabled"}
+    with racer_profile_rebuild_lock:
+        if racer_profile_rebuild_active:
+            return {"scheduled": False, "active": True, "reason": reason}
+        racer_profile_rebuild_active = True
+
+    def run():
+        global racer_profile_rebuild_active
+        mark_worker_start("racer_profile_rebuild")
+        try:
+            count = rebuild_racer_profiles()
+            print(f"[racer_profile] rebuilt count={count} reason={reason}", flush=True)
+        except Exception as error:
+            print(f"[racer_profile] rebuild failed reason={reason} error={error}", flush=True)
+        finally:
+            mark_worker_end("racer_profile_rebuild")
+            with racer_profile_rebuild_lock:
+                racer_profile_rebuild_active = False
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"scheduled": True, "active": True, "reason": reason}
+
+
+def file_status(path):
+    try:
+        stat = path.stat()
+        return {
+            "exists": True,
+            "bytes": stat.st_size,
+            "mb": round(stat.st_size / (1024 * 1024), 3),
+            "updatedAt": datetime.fromtimestamp(stat.st_mtime, JST).isoformat(timespec="seconds"),
+        }
+    except OSError:
+        return {"exists": False, "bytes": 0, "mb": 0}
+
+
+def get_racer_profile_status(registration="", lane=""):
+    registration = str(registration or "").strip()
+    try:
+        lane_key = str(int(lane)) if str(lane or "").strip() else ""
+    except (TypeError, ValueError):
+        lane_key = ""
+    history = read_racer_history()
+    with racer_profile_cache_lock:
+        profile_count = len(racer_profile_cache)
+        baseline = dict(lane_baseline_cache.get("byLane") or {})
+        baseline_saved_at = lane_baseline_cache.get("savedAt")
+        sample_profiles = []
+        for key in sorted(racer_profile_cache.keys())[:5]:
+            profile = (racer_profile_cache.get(key) or {}).get("profile") or {}
+            sample_profiles.append({
+                "registration": profile.get("registration") or key,
+                "name": profile.get("name") or "",
+                "recentCount": len(profile.get("recentFinishes") or []),
+            })
+        selected_profile = None
+        if registration:
+            selected_profile = (racer_profile_cache.get(registration) or {}).get("profile")
+    selected_lane_stat = None
+    selected_recent = []
+    if isinstance(selected_profile, dict):
+        if lane_key:
+            selected_lane_stat = (selected_profile.get("byLane") or {}).get(lane_key)
+        selected_recent = selected_profile.get("recentFinishes") or []
+    return {
+        "persisted": {
+            "racerHistory": str(RACER_HISTORY_FILE),
+            "racerProfiles": str(RACER_PROFILE_CACHE_FILE),
+            "racerHistoryFile": file_status(RACER_HISTORY_FILE),
+            "racerProfilesFile": file_status(RACER_PROFILE_CACHE_FILE),
+        },
+        "historyRaces": len(history),
+        "profiles": profile_count,
+        "baselineSavedAt": (
+            datetime.fromtimestamp(float(baseline_saved_at), JST).isoformat(timespec="seconds")
+            if baseline_saved_at else None
+        ),
+        "laneBaseline": baseline,
+        "sampleProfiles": sample_profiles,
+        "selected": {
+            "registration": registration,
+            "lane": lane_key,
+            "profile": selected_profile,
+            "laneStat": selected_lane_stat,
+            "recentFinishes": selected_recent,
+        } if registration else None,
+    }
+
+
 def get_racer_profile(registration):
     if registration is None:
         return None
@@ -4448,6 +4600,13 @@ class AppHandler(SimpleHTTPRequestHandler):
             return self.send_json(payload, 200 if ok else 400)
         if parsed.path == "/api/admin/backfill-range/cancel":
             return self.send_json(cancel_backfill_range())
+        if parsed.path == "/api/admin/racer-profile-status":
+            query = parse_qs(parsed.query)
+            registration = query.get("registration", [""])[0]
+            lane = query.get("lane", [""])[0]
+            return self.send_json(get_racer_profile_status(registration=registration, lane=lane))
+        if parsed.path == "/api/admin/racer-profile-rebuild":
+            return self.send_json(schedule_racer_profile_rebuild("admin"))
         if parsed.path == "/api/admin/performance":
             query = parse_qs(parsed.query)
             date = query.get("date", [""])[0]
