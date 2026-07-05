@@ -127,6 +127,10 @@ const BET_MODE_CONFIG = {
   ana: { label: "穴狙い", strategyKeys: ["ana"] },
   miokuri: { label: "見送り", strategyKeys: [] }
 };
+const LANE_ADVANTAGE_WEIGHT = 8;
+const LANE_ADVANTAGE_SHRINKAGE_RACES = 10;
+const FORM_TREND_WEIGHT = 1.5;
+const FORM_TREND_MIN_RACES = 3;
 const GRADE_FALLBACK_STATS = {
   A1: { national: 6.2, local: 5.9, motor: 32, start: 0.16 },
   A2: { national: 5.4, local: 5.1, motor: 31, start: 0.17 },
@@ -1004,6 +1008,56 @@ function renderLaneProfileStat(racer) {
   `;
 }
 
+function calculateLaneAdvantage(laneStat, laneBaseline) {
+  const races = Number(laneStat?.races) || 0;
+  const winRate = Number(laneStat?.winRate);
+  const baseline = Number(laneBaseline);
+  if (!Number.isFinite(winRate) || !Number.isFinite(baseline) || races <= 0) {
+    return { advantage: 0, confidence: 0, impact: 0 };
+  }
+  const confidence = Math.min(1, races / LANE_ADVANTAGE_SHRINKAGE_RACES);
+  const advantage = (winRate - baseline) * confidence;
+  return {
+    advantage,
+    confidence,
+    impact: advantage * LANE_ADVANTAGE_WEIGHT
+  };
+}
+
+function normalizeRecentFinishValue(value) {
+  const finish = Number(
+    typeof value === "object" && value !== null
+      ? value.finish
+      : value
+  );
+  return Number.isInteger(finish) && finish >= 1 && finish <= 6 ? finish : null;
+}
+
+function estimateNationalAvgFinish(racer) {
+  const explicit = Number(racer.nationalAvgFinish);
+  if (Number.isFinite(explicit) && explicit >= 1 && explicit <= 6) return explicit;
+  const national = Number(racer.national);
+  if (!Number.isFinite(national)) return 3.5;
+  return clamp(6.1 - national * .55, 1.4, 5.6);
+}
+
+function calculateFormTrend(recentFinishes, nationalAvgFinish) {
+  const finishes = (Array.isArray(recentFinishes) ? recentFinishes : [])
+    .map(normalizeRecentFinishValue)
+    .filter((finish) => finish !== null)
+    .slice(0, 8);
+  if (finishes.length < FORM_TREND_MIN_RACES || !Number.isFinite(nationalAvgFinish)) {
+    return { recentAvgFinish: null, formTrend: 0, impact: 0 };
+  }
+  const recentAvgFinish = finishes.reduce((sum, finish) => sum + finish, 0) / finishes.length;
+  const formTrend = nationalAvgFinish - recentAvgFinish;
+  return {
+    recentAvgFinish,
+    formTrend,
+    impact: formTrend * FORM_TREND_WEIGHT
+  };
+}
+
 function calculateWeatherImpact(boat, wind, wave, direction, weatherLabel) {
   if (!Number.isFinite(wind) && !Number.isFinite(wave) && !weatherLabel) {
     return { score: 0, note: "" };
@@ -1355,6 +1409,9 @@ function buildRaceData(race = selectedRace) {
     const recentFinishes = Array.isArray(officialRacer.recentFinishes)
       ? officialRacer.recentFinishes
       : [];
+    const laneProfile = calculateLaneAdvantage(laneStat, laneBaseline);
+    const nationalAvgFinish = estimateNationalAvgFinish(officialRacer);
+    const formProfile = calculateFormTrend(recentFinishes, nationalAvgFinish);
     const live = beforeinfo[boat] || {};
     const exhibition = phase.exhibitionAvailable ? live.exhibition : null;
     const condition = null;
@@ -1377,7 +1434,9 @@ function buildRaceData(race = selectedRace) {
       + (0.18 - start) * 26
       + weatherImpact.score
       + venueImpact.score
-      + learningImpact;
+      + learningImpact
+      + laneProfile.impact
+      + formProfile.impact;
     const exhibitionImpact = phase.exhibitionAvailable
       ? clamp((6.78 - exhibition) * 48, -6, 7)
       : 0;
@@ -1408,6 +1467,13 @@ function buildRaceData(race = selectedRace) {
       laneStat,
       laneBaseline,
       recentFinishes,
+      laneAdvantage: laneProfile.advantage,
+      laneProfileConfidence: laneProfile.confidence,
+      laneProfileImpact: laneProfile.impact,
+      nationalAvgFinish,
+      recentAvgFinish: formProfile.recentAvgFinish,
+      formTrend: formProfile.formTrend,
+      formTrendImpact: formProfile.impact,
       learningImpact,
       tilt: live.tilt,
       parts: live.parts,
@@ -1649,6 +1715,12 @@ function renderRace(data) {
     Number.isFinite(first.weatherImpact) && Math.abs(first.weatherImpact) >= .1
       ? `水面補正 ${first.weatherImpact >= 0 ? "+" : ""}${first.weatherImpact.toFixed(1)}`
       : "水面補正 影響小",
+    Number.isFinite(first.laneProfileImpact) && Math.abs(first.laneProfileImpact) >= .2
+      ? `艇番適性 ${first.laneProfileImpact >= 0 ? "+" : ""}${first.laneProfileImpact.toFixed(1)}`
+      : "艇番適性 影響小",
+    Number.isFinite(first.formTrendImpact) && Math.abs(first.formTrendImpact) >= .4
+      ? `直近成績 ${first.formTrendImpact >= 0 ? "+" : ""}${first.formTrendImpact.toFixed(1)}`
+      : "直近成績 影響小",
     phase.exhibitionAvailable ? `展示反映 ${first.exhibition.toFixed(2)}` : "展示公開後に再計算",
     Number.isFinite(wind) ? `公式風 ${direction || ""}${wind.toFixed(0)}m` : "風未取得",
     Number.isFinite(wave) ? `公式波高 ${wave.toFixed(0)}cm` : "波未取得",
@@ -2890,7 +2962,14 @@ function saveLearningLog(rows) {
         venueImpact: racer.venueImpact,
         laneStat: racer.laneStat,
         laneBaseline: racer.laneBaseline,
-        recentFinishes: racer.recentFinishes
+        recentFinishes: racer.recentFinishes,
+        laneAdvantage: racer.laneAdvantage,
+        laneProfileConfidence: racer.laneProfileConfidence,
+        laneProfileImpact: racer.laneProfileImpact,
+        nationalAvgFinish: racer.nationalAvgFinish,
+        recentAvgFinish: racer.recentAvgFinish,
+        formTrend: racer.formTrend,
+        formTrendImpact: racer.formTrendImpact
       }))
     : [];
   const normalizeLearningOdds = (oddsMap) => {
