@@ -20,11 +20,22 @@ from urllib.request import Request, urlopen
 
 
 OFFICIAL_BASE = "https://www.boatrace.jp"
-USER_AGENT = "Mozilla/5.0 BOAT-PREDICT-AI/1.0"
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
+)
+OFFICIAL_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
+    "Referer": f"{OFFICIAL_BASE}/owpc/pc/race/index",
+    "Connection": "close",
+}
 CACHE_SECONDS = 21600
 PAST_RESULT_CACHE_SECONDS = int(os.environ.get("BOAT_PAST_RESULT_CACHE_SECONDS", str(365 * 24 * 60 * 60)))
 FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_FETCH_TIMEOUT", "6"))
-PROGRAM_INDEX_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PROGRAM_INDEX_TIMEOUT", "7"))
+PROGRAM_INDEX_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PROGRAM_INDEX_TIMEOUT", "11"))
 DETAIL_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_DETAIL_FETCH_TIMEOUT", "3"))
 CACHE_FLUSH_INTERVAL_SECONDS = int(os.environ.get("BOAT_CACHE_FLUSH_INTERVAL", "30"))
 FETCH_MEMORY_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_FETCH_MEMORY_CACHE_MAX_ENTRIES", "300"))
@@ -3260,7 +3271,7 @@ def fetch_html(path, cache_seconds=CACHE_SECONDS, timeout=FETCH_TIMEOUT_SECONDS)
             if time.time() - cache_file.stat().st_mtime < cache_seconds:
                 remember_memory_cached_html(path, stale_text, cache_seconds)
                 return stale_text
-        request = Request(f"{OFFICIAL_BASE}{path}", headers={"User-Agent": USER_AGENT})
+        request = Request(f"{OFFICIAL_BASE}{path}", headers=OFFICIAL_HEADERS)
         try:
             with urlopen(request, timeout=timeout) as response:
                 text = response.read().decode("utf-8", errors="replace")
