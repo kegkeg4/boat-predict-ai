@@ -59,6 +59,11 @@ BACKFILL_RANGE_MAX_DAYS_BACK = int(os.environ.get("BOAT_BACKFILL_RANGE_MAX_DAYS_
 BACKGROUND_SYNC_INTERVAL_SECONDS = int(os.environ.get("BOAT_BACKGROUND_SYNC_INTERVAL", "1800"))
 PAY_WARM_INTERVAL_SECONDS = int(os.environ.get("BOAT_PAY_WARM_INTERVAL", "45"))
 TODAY_RECORD_INTERVAL_SECONDS = int(os.environ.get("BOAT_TODAY_RECORD_INTERVAL", "900"))
+WEATHER_FETCH_INTERVAL_SECONDS = int(os.environ.get("BOAT_WEATHER_FETCH_INTERVAL", "60"))
+WEATHER_FETCH_LEAD_MINUTES = int(os.environ.get("BOAT_WEATHER_FETCH_LEAD_MINUTES", "25"))
+WEATHER_FETCH_RETRY_SECONDS = int(os.environ.get("BOAT_WEATHER_FETCH_RETRY_SECONDS", "300"))
+WEATHER_FETCH_MAX_ATTEMPTS = int(os.environ.get("BOAT_WEATHER_FETCH_MAX_ATTEMPTS", "3"))
+WEATHER_FETCH_MAX_PER_TICK = int(os.environ.get("BOAT_WEATHER_FETCH_MAX_PER_TICK", "6"))
 RESULT_BOARD_CACHE_SECONDS = int(os.environ.get("BOAT_RESULT_BOARD_CACHE_SECONDS", "120"))
 KOROGASHI_MONTH_CACHE_SECONDS = int(os.environ.get("BOAT_KOROGASHI_MONTH_CACHE_SECONDS", "300"))
 SIGNALS_CACHE_SECONDS = int(os.environ.get("BOAT_SIGNALS_CACHE_SECONDS", "180"))
@@ -174,6 +179,18 @@ admin_backfill_range_cancel = threading.Event()
 racer_profile_done = set()
 racer_profile_rebuild_lock = threading.Lock()
 racer_profile_rebuild_active = False
+weather_fetch_lock = threading.Lock()
+weather_fetch_state = {
+    "date": "",
+    "updatedAt": None,
+    "totalRaces": 0,
+    "successRaces": 0,
+    "pendingRaces": 0,
+    "missedRaces": 0,
+    "attemptedRaces": 0,
+    "lastMessage": "待機中",
+    "races": {},
+}
 
 
 def current_rss_mb():
@@ -3269,6 +3286,249 @@ def should_warm_signals(date, cutoff):
     return now - timedelta(minutes=20) <= cutoff_dt <= now + timedelta(minutes=90)
 
 
+def cutoff_datetime_for_today(cutoff):
+    match = re.search(r"(\d{1,2}):(\d{2})", str(cutoff or ""))
+    if not match:
+        return None
+    now = datetime.now(JST)
+    return now.replace(
+        hour=int(match.group(1)),
+        minute=int(match.group(2)),
+        second=0,
+        microsecond=0,
+    )
+
+
+def signals_weather_available(payload):
+    if not isinstance(payload, dict):
+        return False
+    weather = ((payload.get("beforeinfo") or {}).get("weather") or {})
+    return bool(weather.get("available")) and any(
+        weather.get(key) not in (None, "")
+        for key in ("weather", "windSpeed", "windDirection", "waveHeight")
+    )
+
+
+def get_stored_signals(date, jcd, race):
+    cache_key = f"{date}-{jcd}-{race}"
+    with signals_cache_lock:
+        cached = signals_cache.get(cache_key)
+    return (cached or {}).get("payload")
+
+
+def weather_fetch_key(date, jcd, race):
+    return f"{date}-{jcd}-{race}"
+
+
+def update_weather_fetch_race(key, **updates):
+    with weather_fetch_lock:
+        race = weather_fetch_state.setdefault("races", {}).setdefault(key, {})
+        race.update(updates)
+        weather_fetch_state["updatedAt"] = datetime.now(JST).isoformat(timespec="seconds")
+
+
+def refresh_weather_fetch_counts(date=None, total_races=None):
+    with weather_fetch_lock:
+        if date is not None:
+            weather_fetch_state["date"] = date
+        if total_races is not None:
+            weather_fetch_state["totalRaces"] = total_races
+        races = weather_fetch_state.get("races") or {}
+        today_prefix = f"{weather_fetch_state.get('date')}-"
+        today_races = {
+            key: value
+            for key, value in races.items()
+            if key.startswith(today_prefix)
+        }
+        weather_fetch_state["successRaces"] = sum(
+            1 for value in today_races.values() if value.get("status") == "success"
+        )
+        weather_fetch_state["missedRaces"] = sum(
+            1 for value in today_races.values() if value.get("status") in ("missed", "failed")
+        )
+        weather_fetch_state["attemptedRaces"] = sum(
+            1 for value in today_races.values() if int(value.get("attempts") or 0) > 0
+        )
+        weather_fetch_state["pendingRaces"] = max(
+            0,
+            int(weather_fetch_state.get("totalRaces") or 0)
+            - weather_fetch_state["successRaces"]
+            - weather_fetch_state["missedRaces"],
+        )
+        weather_fetch_state["updatedAt"] = datetime.now(JST).isoformat(timespec="seconds")
+
+
+def get_weather_fetch_status():
+    refresh_weather_fetch_counts(current_jst_date())
+    with weather_fetch_lock:
+        payload = dict(weather_fetch_state)
+        payload["races"] = dict(weather_fetch_state.get("races") or {})
+    return payload
+
+
+def enrich_learning_weather_from_signals(date, jcd, race, signals):
+    if not signals_weather_available(signals):
+        return False
+    try:
+        venue = VENUE_NAMES[int(jcd) - 1]
+    except (TypeError, ValueError, IndexError):
+        return False
+    event_key = f"{date}-{venue}-{int(race)}"
+    weather = ((signals.get("beforeinfo") or {}).get("weather") or {})
+    with learning_lock:
+        store = read_learning_store()
+        events = store.get("events") or {}
+        event = events.get(event_key)
+        if not isinstance(event, dict):
+            return False
+        changed = False
+        mapping = {
+            "weather": weather.get("weather"),
+            "wind": weather.get("windSpeed"),
+            "wave": weather.get("waveHeight"),
+        }
+        for key, value in mapping.items():
+            if value in (None, ""):
+                continue
+            if event.get(key) != value:
+                event[key] = value
+                changed = True
+        if weather.get("windDirection") and event.get("windDirection") != weather.get("windDirection"):
+            event["windDirection"] = weather.get("windDirection")
+            changed = True
+        if not changed:
+            return False
+        store["updatedAt"] = datetime.now(JST).isoformat(timespec="seconds")
+        save_learning_store(store)
+    return True
+
+
+def weather_fetch_once():
+    date = current_jst_date()
+    now = datetime.now(JST)
+    total_races = 0
+    attempted_this_tick = 0
+    try:
+        venues_payload = load_venues_status(date)
+    except Exception as error:
+        with weather_fetch_lock:
+            weather_fetch_state["date"] = date
+            weather_fetch_state["lastMessage"] = f"開催場取得失敗: {error}"
+        return 0
+    active_jcds = sorted(
+        jcd for jcd, status in (venues_payload.get("venues") or {}).items()
+        if status.get("available")
+    )
+    for jcd in active_jcds:
+        try:
+            program = load_program(date, jcd, 1, should_prefetch=False, fast=True)
+        except Exception:
+            continue
+        for race_info in program.get("races") or []:
+            race = race_info.get("race")
+            if not race:
+                continue
+            total_races += 1
+            key = weather_fetch_key(date, jcd, race)
+            cutoff = race_info.get("cutoff") or ""
+            cutoff_dt = cutoff_datetime_for_today(cutoff)
+            stored_signals = get_stored_signals(date, jcd, race)
+            try:
+                venue = VENUE_NAMES[int(jcd) - 1]
+            except (TypeError, ValueError, IndexError):
+                venue = jcd
+            with weather_fetch_lock:
+                entry = weather_fetch_state.setdefault("races", {}).setdefault(key, {})
+                entry.setdefault("date", date)
+                entry.setdefault("jcd", jcd)
+                entry.setdefault("venue", venue)
+                entry.setdefault("race", race)
+                entry["cutoff"] = cutoff
+            if signals_weather_available(stored_signals):
+                update_weather_fetch_race(
+                    key,
+                    status="success",
+                    source="cache",
+                    weather=((stored_signals.get("beforeinfo") or {}).get("weather") or {}),
+                    fetchedAt=datetime.now(JST).isoformat(timespec="seconds"),
+                )
+                continue
+            if not cutoff_dt:
+                update_weather_fetch_race(key, status="no-cutoff")
+                continue
+            fetch_start = cutoff_dt - timedelta(minutes=WEATHER_FETCH_LEAD_MINUTES)
+            if now < fetch_start:
+                update_weather_fetch_race(
+                    key,
+                    status="scheduled",
+                    scheduledAt=fetch_start.isoformat(timespec="seconds"),
+                )
+                continue
+            with weather_fetch_lock:
+                entry = weather_fetch_state.get("races", {}).get(key, {})
+                attempts = int(entry.get("attempts") or 0)
+                last_attempt = float(entry.get("lastAttemptTs") or 0)
+                status = entry.get("status")
+            if status == "success":
+                continue
+            if now > cutoff_dt:
+                update_weather_fetch_race(key, status="missed", message="締切時刻を過ぎたため終了")
+                continue
+            if attempts >= WEATHER_FETCH_MAX_ATTEMPTS:
+                update_weather_fetch_race(key, status="failed", message="最大リトライ回数に到達")
+                continue
+            if last_attempt and time.time() - last_attempt < WEATHER_FETCH_RETRY_SECONDS:
+                continue
+            if attempted_this_tick >= WEATHER_FETCH_MAX_PER_TICK:
+                continue
+            attempted_this_tick += 1
+            update_weather_fetch_race(
+                key,
+                status="fetching",
+                attempts=attempts + 1,
+                lastAttemptTs=time.time(),
+                lastAttemptAt=datetime.now(JST).isoformat(timespec="seconds"),
+            )
+            try:
+                signals = load_signals(date, jcd, int(race), timeout=min(FETCH_TIMEOUT_SECONDS, 6))
+                if signals_weather_available(signals):
+                    enrich_learning_weather_from_signals(date, jcd, int(race), signals)
+                    update_weather_fetch_race(
+                        key,
+                        status="success",
+                        source="live",
+                        weather=((signals.get("beforeinfo") or {}).get("weather") or {}),
+                        fetchedAt=datetime.now(JST).isoformat(timespec="seconds"),
+                    )
+                    log_runtime_status(f"weather_fetch:success:{jcd}:{race}", force=True)
+                else:
+                    update_weather_fetch_race(key, status="retry", message="直前情報未公開")
+            except Exception as error:
+                update_weather_fetch_race(key, status="retry", message=str(error))
+    refresh_weather_fetch_counts(date, total_races)
+    with weather_fetch_lock:
+        weather_fetch_state["lastMessage"] = f"{attempted_this_tick}件取得を試行"
+    return attempted_this_tick
+
+
+def weather_fetch_worker():
+    while True:
+        mark_worker_start("weather_fetch")
+        try:
+            weather_fetch_once()
+        except Exception as error:
+            with weather_fetch_lock:
+                weather_fetch_state["lastMessage"] = f"巡回エラー: {error}"
+        finally:
+            mark_worker_end("weather_fetch")
+        time.sleep(max(20, WEATHER_FETCH_INTERVAL_SECONDS))
+
+
+def schedule_weather_fetch_worker():
+    thread = threading.Thread(target=weather_fetch_worker, daemon=True)
+    thread.start()
+
+
 def warm_completed_results_once(date=None):
     target_date = date or current_jst_date()
     try:
@@ -4623,6 +4883,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             return self.send_json(get_racer_profile_status(registration=registration, lane=lane))
         if parsed.path == "/api/admin/racer-profile-rebuild":
             return self.send_json(schedule_racer_profile_rebuild("admin"))
+        if parsed.path == "/api/admin/weather-fetch-status":
+            return self.send_json(get_weather_fetch_status())
         if parsed.path == "/api/admin/performance":
             query = parse_qs(parsed.query)
             date = query.get("date", [""])[0]
@@ -4793,6 +5055,8 @@ if __name__ == "__main__":
         schedule_result_warmer()
     if os.environ.get("BOAT_PAY_WARMER", "1") != "0":
         schedule_pay_warmer()
+    if os.environ.get("BOAT_WEATHER_FETCHER", "1") != "0":
+        schedule_weather_fetch_worker()
     if os.environ.get("BOAT_AUTO_BACKFILL", "1") != "0":
         schedule_admin_auto_backfill()
     if os.environ.get("BOAT_RACER_PROFILE", "1") != "0":
