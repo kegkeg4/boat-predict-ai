@@ -2964,6 +2964,21 @@ def attach_racer_profile_fields(racer):
     return racer
 
 
+def attach_program_profile_fields(payload):
+    if not isinstance(payload, dict):
+        return payload
+    for race in payload.get("races") or []:
+        racers = race.get("racers") if isinstance(race, dict) else None
+        if not isinstance(racers, list):
+            continue
+        for index, racer in enumerate(racers):
+            if not isinstance(racer, dict):
+                continue
+            racer.setdefault("boat", index + 1)
+            attach_racer_profile_fields(racer)
+    return payload
+
+
 loaded_racer_profiles, loaded_lane_baseline = read_racer_profile_cache()
 with racer_profile_cache_lock:
     racer_profile_cache.update(loaded_racer_profiles)
@@ -3507,7 +3522,7 @@ def parse_race_index(html_text):
         if not match:
             continue
         racers = []
-        for cell in cells[3:9]:
+        for index, cell in enumerate(cells[3:9]):
             profile = next(
                 (link for link in cell["links"] if "toban=" in link["href"]),
                 None,
@@ -3518,11 +3533,12 @@ def parse_race_index(html_text):
             registration_match = re.search(r"toban=(\d+)", profile["href"])
             grade_match = re.search(r"\b(A1|A2|B1|B2)\b", cell["text"])
             racers.append(
-                {
+                attach_racer_profile_fields({
+                    "boat": index + 1,
                     "name": profile["text"],
                     "registration": int(registration_match.group(1)),
                     "grade": grade_match.group(1) if grade_match else "",
-                }
+                })
             )
         if len(racers) == 6:
             races.append(
@@ -4123,11 +4139,11 @@ def load_program(date, jcd, selected_race, should_prefetch=True, fast=False):
                 if stored_race and stored_race.get("detailed"):
                     if should_prefetch:
                         schedule_program_prefetch(date, jcd)
-                    return stored["payload"]
+                    return attach_program_profile_fields(stored["payload"])
                 if fast and stored_race and len(stored_race.get("racers", [])) == 6:
                     if should_prefetch:
                         schedule_program_prefetch(date, jcd)
-                    return stored["payload"]
+                    return attach_program_profile_fields(stored["payload"])
         elif stale_payload and stale_payload.get("available"):
             recent_payload = stale_payload
 
@@ -4140,7 +4156,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True, fast=False):
     if fast and recent_payload and recent_payload.get("races"):
         if should_prefetch:
             schedule_program_prefetch(date, jcd)
-        return recent_payload
+        return attach_program_profile_fields(recent_payload)
     if recent_payload and recent_payload.get("races"):
         races = [dict(race) for race in recent_payload["races"]]
         try:
@@ -4154,7 +4170,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True, fast=False):
             if stale_payload and stale_payload.get("available"):
                 if should_prefetch:
                     schedule_program_prefetch(date, jcd)
-                return stale_payload
+                return attach_program_profile_fields(stale_payload)
             raise
         races = parse_race_index(index_html)
         detail_html = ""
@@ -4166,7 +4182,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True, fast=False):
                 index_html = index_future.result(timeout=PROGRAM_INDEX_TIMEOUT_SECONDS + 1)
             except Exception:
                 if stale_payload and stale_payload.get("available"):
-                    return stale_payload
+                    return attach_program_profile_fields(stale_payload)
                 raise
             try:
                 detail_html = detail_future.result(timeout=DETAIL_FETCH_TIMEOUT_SECONDS + 1)
@@ -4175,7 +4191,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True, fast=False):
         races = parse_race_index(index_html)
     if not races:
         if stale_payload and stale_payload.get("available"):
-            return stale_payload
+            return attach_program_profile_fields(stale_payload)
         payload = {"date": date, "jcd": jcd, "available": False, "races": []}
         if date > current_jst_date():
             with program_cache_lock:
@@ -4222,7 +4238,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True, fast=False):
     save_program_cache()
     if should_prefetch:
         schedule_program_prefetch(date, jcd)
-    return payload
+    return attach_program_profile_fields(payload)
 
 
 def fetch_raceresult_payload(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
