@@ -22,23 +22,23 @@ from urllib.request import Request, urlopen
 OFFICIAL_BASE = "https://www.boatrace.jp"
 USER_AGENT = "Mozilla/5.0 BOAT-PREDICT-AI/1.0"
 CACHE_SECONDS = 21600
-PAST_RESULT_CACHE_SECONDS = int(os.environ.get("BOAT_PAST_RESULT_CACHE_SECONDS", str(30 * 24 * 60 * 60)))
-FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_FETCH_TIMEOUT", "8"))
-PROGRAM_INDEX_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PROGRAM_INDEX_TIMEOUT", "14"))
+PAST_RESULT_CACHE_SECONDS = int(os.environ.get("BOAT_PAST_RESULT_CACHE_SECONDS", str(365 * 24 * 60 * 60)))
+FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_FETCH_TIMEOUT", "6"))
+PROGRAM_INDEX_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PROGRAM_INDEX_TIMEOUT", "7"))
 DETAIL_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_DETAIL_FETCH_TIMEOUT", "3"))
 CACHE_FLUSH_INTERVAL_SECONDS = int(os.environ.get("BOAT_CACHE_FLUSH_INTERVAL", "30"))
 FETCH_MEMORY_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_FETCH_MEMORY_CACHE_MAX_ENTRIES", "300"))
-FETCH_LOCKS_MAX_ENTRIES = int(os.environ.get("BOAT_FETCH_LOCKS_MAX_ENTRIES", "1000"))
-HTML_CACHE_MAX_AGE_SECONDS = int(os.environ.get("BOAT_HTML_CACHE_MAX_AGE_SECONDS", str(14 * 24 * 60 * 60)))
-HTML_CACHE_CLEANUP_INTERVAL_SECONDS = int(os.environ.get("BOAT_HTML_CACHE_CLEANUP_INTERVAL", str(6 * 60 * 60)))
-HTML_CACHE_MAX_FILES = int(os.environ.get("BOAT_HTML_CACHE_MAX_FILES", "2500"))
+FETCH_LOCKS_MAX_ENTRIES = int(os.environ.get("BOAT_FETCH_LOCKS_MAX_ENTRIES", "100"))
+HTML_CACHE_MAX_AGE_SECONDS = int(os.environ.get("BOAT_HTML_CACHE_MAX_AGE_SECONDS", str(3 * 24 * 60 * 60)))
+HTML_CACHE_CLEANUP_INTERVAL_SECONDS = int(os.environ.get("BOAT_HTML_CACHE_CLEANUP_INTERVAL", str(20 * 60)))
+HTML_CACHE_MAX_FILES = int(os.environ.get("BOAT_HTML_CACHE_MAX_FILES", "1500"))
 LEARNING_MEMORY_CACHE_MAX_BYTES = int(os.environ.get("BOAT_LEARNING_MEMORY_CACHE_MAX_BYTES", str(5 * 1024 * 1024)))
 ADMIN_BACKFILL_WORKERS = int(os.environ.get("BOAT_ADMIN_BACKFILL_WORKERS", "2"))
 RESULT_FETCH_WORKERS = int(os.environ.get("BOAT_RESULT_FETCH_WORKERS", "2"))
 VENUE_FALLBACK_WORKERS = int(os.environ.get("BOAT_VENUE_FALLBACK_WORKERS", "4"))
-PROGRAM_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_PROGRAM_CACHE_MAX_ENTRIES", "1200"))
-RESULTS_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_RESULTS_CACHE_MAX_ENTRIES", "1200"))
-SIGNALS_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_SIGNALS_CACHE_MAX_ENTRIES", "5000"))
+PROGRAM_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_PROGRAM_CACHE_MAX_ENTRIES", "300"))
+RESULTS_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_RESULTS_CACHE_MAX_ENTRIES", "500"))
+SIGNALS_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_SIGNALS_CACHE_MAX_ENTRIES", "1000"))
 WORKER_STATUS_LOG_SECONDS = int(os.environ.get("BOAT_WORKER_STATUS_LOG_SECONDS", "300"))
 ADMIN_BACKFILL_RESULT_TIMEOUT = float(os.environ.get("BOAT_ADMIN_RESULT_TIMEOUT", "16"))
 ADMIN_BACKFILL_SIGNAL_TIMEOUT = float(os.environ.get("BOAT_ADMIN_SIGNAL_TIMEOUT", "2"))
@@ -48,9 +48,26 @@ BACKFILL_RANGE_MAX_DAYS_BACK = int(os.environ.get("BOAT_BACKFILL_RANGE_MAX_DAYS_
 BACKGROUND_SYNC_INTERVAL_SECONDS = int(os.environ.get("BOAT_BACKGROUND_SYNC_INTERVAL", "1800"))
 PAY_WARM_INTERVAL_SECONDS = int(os.environ.get("BOAT_PAY_WARM_INTERVAL", "45"))
 TODAY_RECORD_INTERVAL_SECONDS = int(os.environ.get("BOAT_TODAY_RECORD_INTERVAL", "900"))
-RESULT_BOARD_CACHE_SECONDS = int(os.environ.get("BOAT_RESULT_BOARD_CACHE_SECONDS", "20"))
+RESULT_BOARD_CACHE_SECONDS = int(os.environ.get("BOAT_RESULT_BOARD_CACHE_SECONDS", "120"))
+KOROGASHI_MONTH_CACHE_SECONDS = int(os.environ.get("BOAT_KOROGASHI_MONTH_CACHE_SECONDS", "300"))
 SIGNALS_CACHE_SECONDS = int(os.environ.get("BOAT_SIGNALS_CACHE_SECONDS", "180"))
 PROGRAM_UNAVAILABLE_CACHE_SECONDS = int(os.environ.get("BOAT_PROGRAM_UNAVAILABLE_CACHE_SECONDS", "5"))
+RACER_PROFILE_MAX_ENTRIES = int(os.environ.get("BOAT_RACER_PROFILE_MAX_ENTRIES", "2200"))
+RACER_PROFILE_RECENT_DAYS = int(os.environ.get("BOAT_RACER_PROFILE_RECENT_DAYS", "120"))
+RACER_PROFILE_MIN_LANE_RACES = int(os.environ.get("BOAT_RACER_PROFILE_MIN_LANE_RACES", "6"))
+RACER_PROFILE_WINDOW_START_HOUR = int(os.environ.get("BOAT_RACER_PROFILE_WINDOW_START", "2"))
+RACER_PROFILE_WINDOW_END_HOUR = int(os.environ.get("BOAT_RACER_PROFILE_WINDOW_END", "6"))
+RACER_PROFILE_SCORING = os.environ.get("BOAT_RACER_PROFILE_SCORING", "0") == "1"
+RACER_PROFILE_SCORE_WEIGHT = float(os.environ.get("BOAT_RACER_PROFILE_SCORE_WEIGHT", "8"))
+LONG_BACKFILL_ENABLED = os.environ.get("BOAT_LONG_BACKFILL", "0") == "1"
+LONG_BACKFILL_TARGET_DAYS = int(os.environ.get("BOAT_LONG_BACKFILL_DAYS", "365"))
+LONG_BACKFILL_DAYS_PER_NIGHT = int(os.environ.get("BOAT_LONG_BACKFILL_PER_NIGHT", "6"))
+LONG_BACKFILL_DAY_GAP_SECONDS = float(os.environ.get("BOAT_LONG_BACKFILL_DAY_GAP", "30"))
+LONG_BACKFILL_VENUE_GAP_SECONDS = float(os.environ.get("BOAT_LONG_BACKFILL_VENUE_GAP", "4"))
+LONG_BACKFILL_RACE_GAP_SECONDS = float(os.environ.get("BOAT_LONG_BACKFILL_RACE_GAP", "0.7"))
+LONG_BACKFILL_WINDOW_START_HOUR = int(os.environ.get("BOAT_LONG_BACKFILL_WINDOW_START", "2"))
+LONG_BACKFILL_WINDOW_END_HOUR = int(os.environ.get("BOAT_LONG_BACKFILL_WINDOW_END", "6"))
+RACER_HISTORY_MAX_ENTRIES = int(os.environ.get("BOAT_RACER_HISTORY_MAX_ENTRIES", "120000"))
 CACHE_DIR = Path(os.environ.get("BOAT_DATA_DIR", Path(__file__).with_name(".official-cache")))
 PROGRAM_CACHE_FILE = CACHE_DIR / "programs.json"
 SCHEDULE_CACHE_FILE = CACHE_DIR / "schedules.json"
@@ -58,6 +75,9 @@ RESULTS_CACHE_FILE = CACHE_DIR / "results.json"
 SIGNALS_CACHE_FILE = CACHE_DIR / "signals.json"
 LEARNING_FILE = CACHE_DIR / "learning.json"
 BACKFILL_RANGE_FILE = CACHE_DIR / "backfill_range.json"
+RACER_PROFILE_CACHE_FILE = CACHE_DIR / "racer_profiles.json"
+RACER_HISTORY_FILE = CACHE_DIR / "racer_history.json"
+LONG_BACKFILL_STATE_FILE = CACHE_DIR / "long_backfill.json"
 SCHEDULE_CACHE_VERSION = 2
 JST = timezone(timedelta(hours=9))
 BOATRACE_JCDS = [f"{number:02d}" for number in range(1, 25)]
@@ -80,6 +100,10 @@ results_cache_lock = threading.Lock()
 results_cache = {}
 signals_cache_lock = threading.Lock()
 signals_cache = {}
+racer_profile_cache_lock = threading.Lock()
+racer_profile_cache = {}
+lane_baseline_cache = {"savedAt": 0, "byLane": {}}
+racer_history_lock = threading.Lock()
 cache_flush_lock = threading.Lock()
 dirty_cache_files = set()
 prefetch_lock = threading.Lock()
@@ -101,6 +125,8 @@ learning_cache_lock = threading.Lock()
 learning_store_cache = {"mtime": None, "store": None}
 result_board_cache_lock = threading.Lock()
 result_board_cache = {}
+korogashi_month_cache_lock = threading.Lock()
+korogashi_month_cache = {}
 admin_backfill_lock = threading.Lock()
 pay_refresh_lock = threading.Lock()
 pay_refreshing_dates = set()
@@ -134,6 +160,7 @@ admin_backfill_status = {
 }
 admin_backfill_done = set()
 admin_backfill_range_cancel = threading.Event()
+racer_profile_done = set()
 
 
 def current_rss_mb():
@@ -159,6 +186,10 @@ def runtime_sizes_snapshot():
         learning_size = LEARNING_FILE.stat().st_size
     except OSError:
         learning_size = 0
+    try:
+        racer_history_size = RACER_HISTORY_FILE.stat().st_size
+    except OSError:
+        racer_history_size = 0
     with cache_lock:
         html_memory_entries = len(cache)
     with fetch_locks_guard:
@@ -169,16 +200,20 @@ def runtime_sizes_snapshot():
         result_entries = len(results_cache)
     with signals_cache_lock:
         signal_entries = len(signals_cache)
+    with racer_profile_cache_lock:
+        racer_profile_entries = len(racer_profile_cache)
     with worker_activity_lock:
         workers = {key: value for key, value in worker_activity.items() if value}
     return {
         "rssMb": current_rss_mb(),
         "learningMb": round(learning_size / (1024 * 1024), 2),
+        "racerHistoryMb": round(racer_history_size / (1024 * 1024), 2),
         "htmlMemory": html_memory_entries,
         "fetchLocks": fetch_lock_entries,
         "programCache": program_entries,
         "resultsCache": result_entries,
         "signalsCache": signal_entries,
+        "racerProfiles": racer_profile_entries,
         "workers": workers,
     }
 
@@ -192,6 +227,7 @@ def log_runtime_status(label, force=False):
         if now - last < WORKER_STATUS_LOG_SECONDS:
             return
     worker_last_log[label] = now
+    prune_runtime_caches()
     snapshot = runtime_sizes_snapshot()
     print(
         "[runtime]",
@@ -266,6 +302,8 @@ def save_learning_store(store):
             learning_store_cache["store"] = None
     with result_board_cache_lock:
         result_board_cache.clear()
+    with korogashi_month_cache_lock:
+        korogashi_month_cache.clear()
 
 
 def prune_saved_at_mapping(mapping, max_entries):
@@ -292,6 +330,19 @@ def prune_fetch_locks():
         overflow -= 1
         if overflow <= 0:
             break
+
+
+def prune_runtime_caches():
+    with program_cache_lock:
+        prune_saved_at_mapping(program_cache, PROGRAM_CACHE_MAX_ENTRIES)
+    with results_cache_lock:
+        prune_saved_at_mapping(results_cache, RESULTS_CACHE_MAX_ENTRIES)
+    with signals_cache_lock:
+        prune_saved_at_mapping(signals_cache, SIGNALS_CACHE_MAX_ENTRIES)
+    with racer_profile_cache_lock:
+        prune_saved_at_mapping(racer_profile_cache, RACER_PROFILE_MAX_ENTRIES)
+    with fetch_locks_guard:
+        prune_fetch_locks()
 
 
 def recompute_learning_weights(events):
@@ -352,12 +403,24 @@ def get_learning():
     }
 
 
+def learning_event_fingerprint(event):
+    if not isinstance(event, dict):
+        return ""
+    comparable = {
+        key: value
+        for key, value in event.items()
+        if key not in ("savedAt",)
+    }
+    return json.dumps(comparable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def record_learning_events(events):
     if not isinstance(events, list):
         return {"error": "events must be list"}
     with learning_lock:
         store = read_learning_store()
         stored_events = store.setdefault("events", {})
+        changed = False
         for event in events:
             if not isinstance(event, dict):
                 continue
@@ -382,10 +445,14 @@ def record_learning_events(events):
                     incoming_saved_at = str(event.get("savedAt") or "")
                     if existing_saved_at and incoming_saved_at and existing_saved_at > incoming_saved_at:
                         continue
+                if learning_event_fingerprint(existing) == learning_event_fingerprint(event):
+                    continue
             stored_events[key] = event
-        store["weights"] = recompute_learning_weights(stored_events)
-        store["updatedAt"] = datetime.now(JST).isoformat(timespec="seconds")
-        save_learning_store(store)
+            changed = True
+        if changed:
+            store["weights"] = recompute_learning_weights(stored_events)
+            store["updatedAt"] = datetime.now(JST).isoformat(timespec="seconds")
+            save_learning_store(store)
     return get_learning()
 
 
@@ -793,6 +860,26 @@ def build_korogashi_month(date, jcd):
         },
         "note": "月末で締め、翌月1日に0円へリセットします。各日1,000円スタート。2連単3点へ残高を均等配分し、的中時は払戻を次レースへ全額コロガシ。外れた日は0円で終了します。",
     }
+
+
+def get_korogashi_month_cached(date, jcd):
+    key = f"{date}-{jcd}"
+    now = time.time()
+    with korogashi_month_cache_lock:
+        cached = korogashi_month_cache.get(key)
+        if cached and now - cached[0] < KOROGASHI_MONTH_CACHE_SECONDS:
+            return cached[1]
+    payload = build_korogashi_month(date, jcd)
+    with korogashi_month_cache_lock:
+        korogashi_month_cache[key] = (now, payload)
+        if len(korogashi_month_cache) > 200:
+            removable = sorted(
+                korogashi_month_cache.items(),
+                key=lambda item: item[1][0],
+            )[: len(korogashi_month_cache) - 200]
+            for old_key, _ in removable:
+                korogashi_month_cache.pop(old_key, None)
+    return payload
 
 
 VENUE_SLUGS = [
@@ -1445,6 +1532,34 @@ def server_boat_score(racer, signals):
     if exhibitions and exhibition is not None:
         fastest = min(exhibitions)
         score += max(-6, min(6, (fastest - float(exhibition)) * 18))
+    recent = racer.get("recentResults")
+    if isinstance(recent, list) and len(recent) >= 2:
+        recent_results = []
+        for value in recent:
+            try:
+                finish = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= finish <= 6:
+                recent_results.append(finish)
+        if len(recent_results) >= 2:
+            avg = sum(recent_results) / len(recent_results)
+            score += max(-3, min(4, (3.5 - avg) * 1.5))
+    if RACER_PROFILE_SCORING:
+        profile = get_racer_profile(racer.get("registration"))
+        lane_stat = (profile or {}).get("byLane", {}).get(str(boat)) if profile else None
+        baseline = get_lane_baseline(boat)
+        if (
+            lane_stat
+            and baseline is not None
+            and lane_stat.get("winRate") is not None
+            and int(lane_stat.get("races") or 0) >= RACER_PROFILE_MIN_LANE_RACES
+        ):
+            deviation = float(lane_stat["winRate"]) - float(baseline)
+            score += max(
+                -RACER_PROFILE_SCORE_WEIGHT,
+                min(RACER_PROFILE_SCORE_WEIGHT, deviation * RACER_PROFILE_SCORE_WEIGHT * 2),
+            )
     return score
 
 
@@ -2004,6 +2119,187 @@ def schedule_backfill_range(from_date, to_date, force=True):
     return True, get_admin_backfill_status()
 
 
+def read_racer_history():
+    with racer_history_lock:
+        try:
+            payload = json.loads(RACER_HISTORY_FILE.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+
+
+def write_racer_history(history):
+    if not isinstance(history, dict):
+        return
+    if RACER_HISTORY_MAX_ENTRIES and len(history) > RACER_HISTORY_MAX_ENTRIES:
+        for key in sorted(history.keys())[: len(history) - RACER_HISTORY_MAX_ENTRIES]:
+            history.pop(key, None)
+    with racer_history_lock:
+        write_json_atomic(RACER_HISTORY_FILE, history)
+
+
+def _finish_from_result(boat, result_list):
+    return _finish_position(boat, result_list)
+
+
+def collect_racer_history_for_date(date, history):
+    try:
+        venues_payload = load_venues_status(date)
+    except Exception:
+        return 0
+    venues = venues_payload.get("venues") or {}
+    active_jcds = sorted(jcd for jcd, status in venues.items() if status.get("available"))
+    added = 0
+    consecutive_failures = 0
+    for jcd in active_jcds:
+        races = int((venues.get(jcd) or {}).get("races") or 12)
+        for race in range(1, min(12, races) + 1):
+            try:
+                key = f"{date}-{jcd}-{race}"
+                if key in history:
+                    continue
+                program = load_program(date, jcd, race, should_prefetch=False, fast=True)
+                race_info = next(
+                    (item for item in program.get("races", []) if item.get("race") == race),
+                    None,
+                )
+                racers = (race_info or {}).get("racers") or []
+                if len(racers) != 6:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 20:
+                        return added
+                    continue
+                result_payload = load_result(date, jcd, race, include_weather=False, allow_live=True)
+                result_list = (
+                    (result_payload.get("result") or {}).get("result")
+                    if isinstance(result_payload, dict) else None
+                )
+                if not result_list:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 20:
+                        return added
+                    continue
+                rows = []
+                for index, racer in enumerate(racers):
+                    toban = racer.get("registration")
+                    lane = racer.get("boat") or (index + 1)
+                    if not toban:
+                        continue
+                    try:
+                        lane = int(lane)
+                    except (TypeError, ValueError):
+                        continue
+                    finish = _finish_from_result(lane, result_list)
+                    if finish is None:
+                        continue
+                    rows.append([toban, lane, finish])
+                if rows:
+                    history[key] = {"d": date, "r": rows}
+                    added += 1
+                    consecutive_failures = 0
+            except Exception:
+                consecutive_failures += 1
+                if consecutive_failures >= 20:
+                    return added
+            finally:
+                time.sleep(LONG_BACKFILL_RACE_GAP_SECONDS)
+        time.sleep(LONG_BACKFILL_VENUE_GAP_SECONDS)
+    return added
+
+
+def load_long_backfill_state():
+    try:
+        payload = json.loads(LONG_BACKFILL_STATE_FILE.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else None
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def save_long_backfill_state(state):
+    write_json_atomic(LONG_BACKFILL_STATE_FILE, state)
+
+
+def init_long_backfill_state():
+    today = datetime.now(JST).date()
+    pending = [
+        (today - timedelta(days=offset)).isoformat()
+        for offset in range(LONG_BACKFILL_TARGET_DAYS, 0, -1)
+    ]
+    state = {
+        "pending": pending,
+        "totalDays": len(pending),
+        "savedTotal": 0,
+        "startedAt": datetime.now(JST).isoformat(timespec="seconds"),
+    }
+    save_long_backfill_state(state)
+    return state
+
+
+def long_backfill_worker():
+    state = load_long_backfill_state() or init_long_backfill_state()
+    while True:
+        try:
+            now = datetime.now(JST)
+            in_window = LONG_BACKFILL_WINDOW_START_HOUR <= now.hour < LONG_BACKFILL_WINDOW_END_HOUR
+            pending = state.get("pending") or []
+            if not in_window or not pending:
+                time.sleep(600)
+                state = load_long_backfill_state() or state
+                continue
+            with admin_backfill_lock:
+                busy = admin_backfill_status.get("active") or admin_backfill_status.get("rangeActive")
+            if busy:
+                time.sleep(300)
+                continue
+            try:
+                record_today_completed_once()
+            except Exception:
+                pass
+            with admin_backfill_lock:
+                if admin_backfill_status.get("active") or admin_backfill_status.get("rangeActive"):
+                    time.sleep(300)
+                    continue
+            mark_worker_start("long_backfill")
+            history = read_racer_history()
+            processed = 0
+            try:
+                while (
+                    pending
+                    and processed < LONG_BACKFILL_DAYS_PER_NIGHT
+                    and LONG_BACKFILL_WINDOW_START_HOUR <= datetime.now(JST).hour < LONG_BACKFILL_WINDOW_END_HOUR
+                ):
+                    with admin_backfill_lock:
+                        if admin_backfill_status.get("active") or admin_backfill_status.get("rangeActive"):
+                            break
+                    target_date = pending[0]
+                    added = collect_racer_history_for_date(target_date, history)
+                    pending.pop(0)
+                    state["pending"] = pending
+                    state["savedTotal"] = int(state.get("savedTotal") or 0) + added
+                    state["lastDate"] = target_date
+                    state["updatedAt"] = datetime.now(JST).isoformat(timespec="seconds")
+                    write_racer_history(history)
+                    save_long_backfill_state(state)
+                    try:
+                        cleanup_html_cache_once()
+                    except Exception:
+                        pass
+                    log_runtime_status(f"long_backfill:{target_date}:added={added}", force=True)
+                    processed += 1
+                    time.sleep(LONG_BACKFILL_DAY_GAP_SECONDS)
+            finally:
+                history = None
+                mark_worker_end("long_backfill")
+            time.sleep(300)
+        except Exception:
+            time.sleep(600)
+
+
+def schedule_long_backfill_worker():
+    thread = threading.Thread(target=long_backfill_worker, daemon=True)
+    thread.start()
+
+
 def cancel_backfill_range():
     admin_backfill_range_cancel.set()
     update_backfill_range_status(message="停止要求を受け付けました。実行中の日付が終わったら停止します。")
@@ -2112,6 +2408,32 @@ def schedule_admin_auto_backfill():
     thread.start()
 
 
+def racer_profile_worker():
+    while True:
+        try:
+            now = datetime.now(JST)
+            today = now.strftime("%Y-%m-%d")
+            in_window = RACER_PROFILE_WINDOW_START_HOUR <= now.hour < RACER_PROFILE_WINDOW_END_HOUR
+            if in_window and today not in racer_profile_done:
+                mark_worker_start("racer_profile")
+                try:
+                    rebuild_racer_profiles()
+                finally:
+                    mark_worker_end("racer_profile")
+                racer_profile_done.add(today)
+                if len(racer_profile_done) > 14:
+                    for old in sorted(racer_profile_done)[:-14]:
+                        racer_profile_done.discard(old)
+        except Exception:
+            pass
+        time.sleep(600)
+
+
+def schedule_racer_profile_worker():
+    thread = threading.Thread(target=racer_profile_worker, daemon=True)
+    thread.start()
+
+
 def read_program_cache():
     try:
         payload = json.loads(PROGRAM_CACHE_FILE.read_text(encoding="utf-8"))
@@ -2126,6 +2448,14 @@ program_cache = read_program_cache()
 
 def save_program_cache():
     request_cache_save("program")
+
+
+def get_program_cache_seconds(date, payload=None):
+    if payload and not payload.get("available"):
+        return PROGRAM_UNAVAILABLE_CACHE_SECONDS
+    if date < current_jst_date():
+        return PAST_RESULT_CACHE_SECONDS
+    return CACHE_SECONDS
 
 
 def read_schedule_cache():
@@ -2269,6 +2599,215 @@ def store_signals_payload(date, jcd, race, payload):
 signals_cache.update(read_signals_cache())
 
 
+def read_racer_profile_cache():
+    try:
+        payload = json.loads(RACER_PROFILE_CACHE_FILE.read_text(encoding="utf-8"))
+        profiles = payload.get("profiles") if isinstance(payload, dict) and "profiles" in payload else payload
+        baseline = payload.get("laneBaseline") if isinstance(payload, dict) else None
+        if not isinstance(profiles, dict):
+            return {}, {}
+        prune_saved_at_mapping(profiles, RACER_PROFILE_MAX_ENTRIES)
+        return profiles, baseline if isinstance(baseline, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}, {}
+
+
+def save_racer_profile_cache():
+    request_cache_save("racer_profile")
+
+
+def _finish_position(boat, result_list):
+    if not isinstance(result_list, list):
+        return None
+    for index, value in enumerate(result_list[:3]):
+        try:
+            if int(value) == int(boat):
+                return index + 1
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def iter_learning_events(store):
+    events = store.get("events") if isinstance(store, dict) else store
+    if isinstance(events, dict):
+        return [event for event in events.values() if isinstance(event, dict)]
+    if isinstance(events, list):
+        return [event for event in events if isinstance(event, dict)]
+    return []
+
+
+def venue_to_jcd(venue):
+    try:
+        return f"{VENUE_NAMES.index(venue) + 1:02d}"
+    except ValueError:
+        return ""
+
+
+def learning_event_history_key(event):
+    date = str(event.get("date") or "")
+    race = event.get("race")
+    venue = event.get("venue") or ""
+    jcd = venue_to_jcd(venue)
+    if not date or not jcd or not str(race).isdigit():
+        return ""
+    return f"{date}-{jcd}-{int(race)}"
+
+
+def add_racer_profile_observation(agg, lane_totals, toban, name, lane, finish, date):
+    if not toban:
+        return False
+    try:
+        lane = int(lane)
+        finish = int(finish)
+    except (TypeError, ValueError):
+        return False
+    if lane < 1 or lane > 6:
+        return False
+    win = 1 if finish == 1 else 0
+    entry = agg.setdefault(str(toban), {
+        "registration": toban,
+        "name": name or "",
+        "byLane": {str(item): {"races": 0, "wins": 0} for item in range(1, 7)},
+        "recent": [],
+    })
+    entry["name"] = name or entry["name"]
+    lane_cell = entry["byLane"][str(lane)]
+    lane_cell["races"] += 1
+    lane_cell["wins"] += win
+    entry["recent"].append((date, lane, finish))
+    lane_totals[lane]["races"] += 1
+    lane_totals[lane]["wins"] += win
+    return True
+
+
+def rebuild_racer_profiles():
+    store = read_learning_store()
+    cutoff = (datetime.now(JST).date() - timedelta(days=RACER_PROFILE_RECENT_DAYS)).isoformat()
+    agg = {}
+    lane_totals = {lane: {"races": 0, "wins": 0} for lane in range(1, 7)}
+    seen_keys = set()
+    for event in iter_learning_events(store):
+        date = str(event.get("date") or "")
+        if date and date < cutoff:
+            continue
+        event_key = learning_event_history_key(event)
+        if event_key:
+            seen_keys.add(event_key)
+        result_list = event.get("result")
+        racers = event.get("racers") if isinstance(event.get("racers"), list) else []
+        for racer in racers:
+            toban = racer.get("registration")
+            lane = racer.get("boat")
+            finish = _finish_position(lane, result_list)
+            if finish is None:
+                continue
+            add_racer_profile_observation(
+                agg,
+                lane_totals,
+                toban,
+                racer.get("name") or "",
+                lane,
+                finish,
+                date,
+            )
+    history = read_racer_history()
+    try:
+        for key, record in history.items():
+            if key in seen_keys:
+                continue
+            date = str(record.get("d") or "")
+            if date and date < cutoff:
+                continue
+            for row in record.get("r") or []:
+                try:
+                    toban, lane, finish = row[0], row[1], row[2]
+                except (TypeError, IndexError):
+                    continue
+                add_racer_profile_observation(
+                    agg,
+                    lane_totals,
+                    toban,
+                    "",
+                    lane,
+                    finish,
+                    date,
+                )
+    finally:
+        history = None
+    by_lane_baseline = {}
+    for lane, cell in lane_totals.items():
+        races = cell["races"]
+        by_lane_baseline[str(lane)] = round(cell["wins"] / races, 4) if races else None
+    saved_at = time.time()
+    built = {}
+    for toban, entry in agg.items():
+        by_lane = {}
+        for lane_str, cell in entry["byLane"].items():
+            races = cell["races"]
+            by_lane[lane_str] = {
+                "races": races,
+                "wins": cell["wins"],
+                "winRate": round(cell["wins"] / races, 4) if races else None,
+            }
+        recent_sorted = sorted(entry["recent"], key=lambda item: item[0], reverse=True)[:8]
+        built[str(toban)] = {
+            "savedAt": saved_at,
+            "profile": {
+                "registration": entry["registration"],
+                "name": entry["name"],
+                "byLane": by_lane,
+                "recentFinishes": [
+                    {"date": date, "lane": lane, "finish": finish}
+                    for (date, lane, finish) in recent_sorted
+                ],
+            },
+        }
+    with racer_profile_cache_lock:
+        racer_profile_cache.clear()
+        racer_profile_cache.update(built)
+        prune_saved_at_mapping(racer_profile_cache, RACER_PROFILE_MAX_ENTRIES)
+        lane_baseline_cache["savedAt"] = saved_at
+        lane_baseline_cache["byLane"] = by_lane_baseline
+    save_racer_profile_cache()
+    log_runtime_status(f"racer_profile:rebuilt:{len(built)}", force=True)
+    return len(built)
+
+
+def get_racer_profile(registration):
+    if registration is None:
+        return None
+    with racer_profile_cache_lock:
+        cached = racer_profile_cache.get(str(registration))
+    return (cached or {}).get("profile")
+
+
+def get_lane_baseline(lane):
+    try:
+        lane_key = str(int(lane))
+    except (TypeError, ValueError):
+        return None
+    with racer_profile_cache_lock:
+        return (lane_baseline_cache.get("byLane") or {}).get(lane_key)
+
+
+def attach_racer_profile_fields(racer):
+    profile = get_racer_profile(racer.get("registration"))
+    lane = racer.get("boat")
+    lane_stat = (profile or {}).get("byLane", {}).get(str(lane)) if lane else None
+    racer["laneStat"] = lane_stat
+    racer["laneBaseline"] = get_lane_baseline(lane) if lane else None
+    racer["recentFinishes"] = (profile or {}).get("recentFinishes")
+    return racer
+
+
+loaded_racer_profiles, loaded_lane_baseline = read_racer_profile_cache()
+with racer_profile_cache_lock:
+    racer_profile_cache.update(loaded_racer_profiles)
+    lane_baseline_cache["savedAt"] = time.time() if loaded_lane_baseline else 0
+    lane_baseline_cache["byLane"] = loaded_lane_baseline
+
+
 def write_json_atomic(path, payload):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
@@ -2304,6 +2843,15 @@ def flush_cache_file(name):
             prune_saved_at_mapping(signals_cache, SIGNALS_CACHE_MAX_ENTRIES)
             snapshot = dict(signals_cache)
         write_json_atomic(SIGNALS_CACHE_FILE, snapshot)
+    elif name == "racer_profile":
+        with racer_profile_cache_lock:
+            prune_saved_at_mapping(racer_profile_cache, RACER_PROFILE_MAX_ENTRIES)
+            snapshot = {
+                "profiles": dict(racer_profile_cache),
+                "laneBaseline": dict(lane_baseline_cache.get("byLane") or {}),
+                "savedAt": lane_baseline_cache.get("savedAt") or time.time(),
+            }
+        write_json_atomic(RACER_PROFILE_CACHE_FILE, snapshot)
 
 
 def flush_dirty_caches_once():
@@ -2858,6 +3406,23 @@ def first_number(value):
     return float(match.group()) if match else None
 
 
+def parse_recent_results_from_cells(cells):
+    recent = []
+    for index in (7, 8):
+        if index >= len(cells):
+            continue
+        text = (cells[index].get("text") or "").translate(
+            str.maketrans("１２３４５６", "123456")
+        )
+        recent.extend(
+            int(match.group())
+            for match in re.finditer(r"(?<!\d)[1-6](?!\d)", text)
+        )
+        if len(recent) >= 3:
+            break
+    return recent[:3] if recent else None
+
+
 def parse_racelist(html_text):
     parser = TableParser()
     parser.feed(html_text)
@@ -2882,18 +3447,18 @@ def parse_racelist(html_text):
         grade_match = re.search(r"\b(A1|A2|B1|B2)\b", cells[2]["text"])
         start_values = re.findall(r"0\.\d+", cells[3]["text"])
         motor_values = re.findall(r"\d+(?:\.\d+)?", cells[6]["text"])
-        racers.append(
-            {
-                "boat": len(racers) + 1,
-                "registration": int(registration_match.group(1)),
-                "name": profile["text"],
-                "grade": grade_match.group(1) if grade_match else "",
-                "start": float(start_values[-1]) if start_values else None,
-                "national": first_number(cells[4]["text"]),
-                "local": first_number(cells[5]["text"]),
-                "motor": float(motor_values[1]) if len(motor_values) > 1 else None,
-            }
-        )
+        racer = {
+            "boat": len(racers) + 1,
+            "registration": int(registration_match.group(1)),
+            "name": profile["text"],
+            "grade": grade_match.group(1) if grade_match else "",
+            "start": float(start_values[-1]) if start_values else None,
+            "national": first_number(cells[4]["text"]),
+            "local": first_number(cells[5]["text"]),
+            "motor": float(motor_values[1]) if len(motor_values) > 1 else None,
+            "recentResults": parse_recent_results_from_cells(cells),
+        }
+        racers.append(attach_racer_profile_fields(racer))
         if len(racers) == 6:
             break
     return racers
@@ -3369,7 +3934,7 @@ def load_signals(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
     return payload
 
 
-def load_program(date, jcd, selected_race, should_prefetch=True):
+def load_program(date, jcd, selected_race, should_prefetch=True, fast=False):
     program_key = f"{date}-{jcd}"
     recent_payload = None
     stale_payload = None
@@ -3378,7 +3943,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
         if stored:
             stored_age = time.time() - stored.get("savedAt", 0)
             stale_payload = stored.get("payload")
-        if stored and stored_age < CACHE_SECONDS:
+        if stored and stored_age < get_program_cache_seconds(date, stored.get("payload")):
             if not stored["payload"].get("available"):
                 if stored_age < PROGRAM_UNAVAILABLE_CACHE_SECONDS:
                     return stored["payload"]
@@ -3396,7 +3961,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
                     if should_prefetch:
                         schedule_program_prefetch(date, jcd)
                     return stored["payload"]
-                if stored_race and len(stored_race.get("racers", [])) == 6:
+                if fast and stored_race and len(stored_race.get("racers", [])) == 6:
                     if should_prefetch:
                         schedule_program_prefetch(date, jcd)
                     return stored["payload"]
@@ -3409,32 +3974,42 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
         f"/owpc/pc/race/racelist?rno={selected_race}"
         f"&jcd={jcd}&hd={compact_date}"
     )
+    if fast and recent_payload and recent_payload.get("races"):
+        if should_prefetch:
+            schedule_program_prefetch(date, jcd)
+        return recent_payload
     if recent_payload and recent_payload.get("races"):
         races = [dict(race) for race in recent_payload["races"]]
         try:
             detail_html = fetch_html(detail_path, timeout=DETAIL_FETCH_TIMEOUT_SECONDS)
         except Exception:
             detail_html = ""
+    elif fast:
+        try:
+            index_html = fetch_html(index_path, CACHE_SECONDS, PROGRAM_INDEX_TIMEOUT_SECONDS)
+        except Exception:
+            if stale_payload and stale_payload.get("available"):
+                if should_prefetch:
+                    schedule_program_prefetch(date, jcd)
+                return stale_payload
+            raise
+        races = parse_race_index(index_html)
+        detail_html = ""
     else:
         with ThreadPoolExecutor(max_workers=2) as executor:
             index_future = executor.submit(fetch_html, index_path, CACHE_SECONDS, PROGRAM_INDEX_TIMEOUT_SECONDS)
             detail_future = executor.submit(fetch_html, detail_path, CACHE_SECONDS, DETAIL_FETCH_TIMEOUT_SECONDS)
             try:
-                index_html = index_future.result()
+                index_html = index_future.result(timeout=PROGRAM_INDEX_TIMEOUT_SECONDS + 1)
             except Exception:
                 if stale_payload and stale_payload.get("available"):
                     return stale_payload
                 raise
             try:
-                detail_html = detail_future.result()
+                detail_html = detail_future.result(timeout=DETAIL_FETCH_TIMEOUT_SECONDS + 1)
             except Exception:
                 detail_html = ""
         races = parse_race_index(index_html)
-    if not races:
-        try:
-            races = parse_race_index(fetch_html(index_path, cache_seconds=0, timeout=PROGRAM_INDEX_TIMEOUT_SECONDS))
-        except Exception:
-            races = []
     if not races:
         if stale_payload and stale_payload.get("available"):
             return stale_payload
@@ -3490,7 +4065,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True):
 def fetch_raceresult_payload(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
     compact_date = date.replace("-", "")
     path = f"/owpc/pc/race/raceresult?rno={race}&jcd={jcd}&hd={compact_date}"
-    result_cache_seconds = CACHE_SECONDS if date < current_jst_date() else 60
+    result_cache_seconds = PAST_RESULT_CACHE_SECONDS if date < current_jst_date() else 60
     html_text = fetch_html(path, cache_seconds=result_cache_seconds, timeout=timeout)
     result = parse_result(html_text)
     return {
@@ -3607,9 +4182,10 @@ def normalize_race_list(races):
 def load_results(date, jcd, races=None, max_workers=RESULT_FETCH_WORKERS, timeout=FETCH_TIMEOUT_SECONDS):
     target_races = normalize_race_list(races)
     cache_key = f"{date}-{jcd}"
-    if date <= current_jst_date():
+    today = current_jst_date()
+    if date == today:
         schedule_pay_refresh(date)
-    else:
+    elif date > today:
         try:
             pay_results = load_pay_results(date, timeout=min(timeout, 12)).get(jcd, {})
         except Exception:
@@ -3637,7 +4213,7 @@ def load_results(date, jcd, races=None, max_workers=RESULT_FETCH_WORKERS, timeou
             results = dict(cached_results)
         else:
             results = {}
-    if date == current_jst_date():
+    if date == today:
         missing = [
             race for race in target_races
             if str(race) not in results
@@ -3880,7 +4456,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             jcd = query.get("jcd", [""])[0].zfill(2)
             if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) or not re.fullmatch(r"\d{2}", jcd):
                 return self.send_json({"error": "invalid parameters"}, 400)
-            return self.send_json(build_korogashi_month(date, jcd))
+            return self.send_json(get_korogashi_month_cached(date, jcd))
         if parsed.path == "/sitemap.xml":
             return self.send_xml(build_sitemap_xml(seo_public_origin(self)))
         if parsed.path == "/robots.txt":
@@ -3939,7 +4515,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             elif parsed.path == "/api/signals":
                 self.send_json(load_signals(date, jcd, int(race)))
             else:
-                self.send_json(load_program(date, jcd, int(race)))
+                fast = query.get("fast", ["0"])[0] == "1"
+                self.send_json(load_program(date, jcd, int(race), fast=fast))
         except Exception as error:
             self.send_json({"error": str(error)}, 502)
 
@@ -4032,6 +4609,10 @@ if __name__ == "__main__":
         schedule_pay_warmer()
     if os.environ.get("BOAT_AUTO_BACKFILL", "1") != "0":
         schedule_admin_auto_backfill()
+    if os.environ.get("BOAT_RACER_PROFILE", "1") != "0":
+        schedule_racer_profile_worker()
+    if LONG_BACKFILL_ENABLED:
+        schedule_long_backfill_worker()
     resume_backfill_range_on_startup()
     try:
         server.serve_forever()

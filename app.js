@@ -100,6 +100,7 @@ const PROGRAM_CACHE_KEY = "boat-predict-official-programs-v1";
 const VENUE_STATUS_CACHE_KEY = "boat-predict-venue-status-v2";
 const PREDICTION_CACHE_KEY = "boat-predict-prediction-snapshots-v1";
 const RESULT_CACHE_KEY = "boat-predict-official-results-v1";
+const RESULT_BOARD_CACHE_KEY = "boat-predict-result-board-v1";
 const LEARNING_LOG_KEY = "boat-predict-learning-log-v1";
 const LEARNING_WEIGHTS_KEY = "boat-predict-learning-weights-v1";
 const PLAN_MODE_KEY = "boat-predict-plan-mode";
@@ -108,9 +109,9 @@ const VENUE_STATUS_CACHE_MS = 6 * 60 * 60 * 1000;
 const PREDICTION_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
 const RESULT_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
 const PERFORMANCE_BET_UNIT_YEN = 100;
-const RESULT_UNAVAILABLE_CACHE_MS = 15 * 1000;
-const REQUEST_TIMEOUT_MS = 10000;
-const MAIN_PROGRAM_TIMEOUT_MS = 25000;
+const RESULT_UNAVAILABLE_CACHE_MS = 3 * 60 * 1000;
+const REQUEST_TIMEOUT_MS = 13000;
+const MAIN_PROGRAM_TIMEOUT_MS = 12000;
 const BACKGROUND_PROGRAM_TIMEOUT_MS = 6000;
 const SIGNAL_TIMEOUT_MS = 7000;
 const RESULT_TIMEOUT_MS = 9000;
@@ -246,10 +247,20 @@ let performanceRefreshTimer = null;
 let performanceRefreshInFlight = false;
 let selectedResultRefreshInFlight = false;
 let performanceRenderTimer = null;
+let performanceSyncTimer = null;
+let performanceSyncInFlight = false;
 let performanceCache = { key: "", totals: null };
 let resultBoardRequestId = 0;
-let korogashiMonthRequestId = 0;
+let resultBoardInFlight = false;
+let lastBoardSyncAt = 0;
+let warmupStatusInFlight = false;
+const BOARD_SYNC_MIN_INTERVAL_MS = 8000;
+const RESULT_BOARD_CLIENT_CACHE_MS = 30000;
+const RESULT_BOARD_CONFIRMED_CACHE_MS = 10 * 60 * 1000;
+const RESULT_BOARD_PENDING_CACHE_MS = 30 * 1000;
+const resultBoardPayloadCache = {};
 let predictionByRaceCache = {};
+let showAllVenues = false;
 let isPremiumMode = localStorage.getItem(PLAN_MODE_KEY) === "premium";
 let venueStatusByDate = loadStoredVenueStatus();
 const dynamicPrograms = loadStoredPrograms();
@@ -298,6 +309,56 @@ function loadStoredVenueStatus() {
   }
 }
 
+function pruneStoredObjectBySavedAt(stored, maxEntries) {
+  return Object.fromEntries(
+    Object.entries(stored || {})
+      .filter(([, item]) => item?.savedAt)
+      .sort(([, a], [, b]) => (b.savedAt || 0) - (a.savedAt || 0))
+      .slice(0, maxEntries)
+  );
+}
+
+function clearBulkyLocalCaches(exceptKey = "") {
+  [
+    PROGRAM_CACHE_KEY,
+    VENUE_STATUS_CACHE_KEY,
+    LEARNING_LOG_KEY,
+    RESULT_CACHE_KEY,
+    RESULT_BOARD_CACHE_KEY
+  ].forEach((key) => {
+    if (key !== exceptKey) localStorage.removeItem(key);
+  });
+}
+
+function safeSetLocalStorage(key, value, compactValue = null) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    if (error?.name !== "QuotaExceededError") throw error;
+  }
+  try {
+    clearBulkyLocalCaches(key);
+    localStorage.setItem(key, compactValue ?? value);
+    return true;
+  } catch (error) {
+    if (error?.name !== "QuotaExceededError") throw error;
+  }
+  try {
+    if (key !== PREDICTION_CACHE_KEY) localStorage.removeItem(PREDICTION_CACHE_KEY);
+    localStorage.setItem(key, compactValue ?? value);
+    return true;
+  } catch (error) {
+    if (error?.name !== "QuotaExceededError") throw error;
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Ignore storage cleanup failures.
+    }
+    return false;
+  }
+}
+
 function storeVenueStatus(date, venuesPayload) {
   let stored = {};
   try {
@@ -306,7 +367,12 @@ function storeVenueStatus(date, venuesPayload) {
     stored = {};
   }
   stored[date] = { savedAt: Date.now(), venues: venuesPayload };
-  localStorage.setItem(VENUE_STATUS_CACHE_KEY, JSON.stringify(stored));
+  const compact = pruneStoredObjectBySavedAt(stored, 8);
+  safeSetLocalStorage(
+    VENUE_STATUS_CACHE_KEY,
+    JSON.stringify(stored),
+    JSON.stringify(compact)
+  );
 }
 
 function storeProgram(key) {
@@ -317,8 +383,12 @@ function storeProgram(key) {
     stored = {};
   }
   stored[key] = { savedAt: Date.now(), program: dynamicPrograms[key] };
-  localStorage.setItem(PROGRAM_CACHE_KEY, JSON.stringify(stored));
-  invalidatePerformanceCache();
+  const compact = pruneStoredObjectBySavedAt(stored, 12);
+  safeSetLocalStorage(
+    PROGRAM_CACHE_KEY,
+    JSON.stringify(stored),
+    JSON.stringify(compact)
+  );
 }
 
 function loadStoredResults() {
@@ -507,6 +577,8 @@ function applyPlanMode() {
 
 async function refreshWarmupStatus() {
   if (!warmupStatus) return;
+  if (warmupStatusInFlight) return;
+  warmupStatusInFlight = true;
   try {
     const response = await fetchWithTimeout("/api/warmup", { timeoutMs: 5000 });
     if (!response.ok) throw new Error(`warmup status ${response.status}`);
@@ -526,6 +598,8 @@ async function refreshWarmupStatus() {
     warmupStatus.classList.toggle("is-warming", false);
     warmupStatus.classList.toggle("is-error", true);
     warmupStatus.lastChild.textContent = "取得サーバー未接続";
+  } finally {
+    warmupStatusInFlight = false;
   }
 }
 
@@ -584,6 +658,22 @@ function isPastDate(dateString = dateInput.value) {
   return selectedDate < today;
 }
 
+function isFutureDate(dateString = dateInput.value) {
+  if (!dateString) return false;
+  const selectedDate = new Date(`${dateString}T00:00:00`);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return selectedDate > today;
+}
+
+function getActiveVenueIndexes(dateString = dateInput.value) {
+  const statuses = venueStatusByDate[dateString] || {};
+  return venues
+    .map((venue, index) => ({ venue, index, status: statuses[String(index + 1).padStart(2, "0")] }))
+    .filter((item) => item.status?.available)
+    .map((item) => item.index);
+}
+
 function getDayResults(dateString = dateInput.value) {
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
   return verifiedOfficialResults[`${dateString}-${jcd}`] || null;
@@ -626,6 +716,12 @@ function getOfficialProgramRace(race = selectedRace) {
   };
 }
 
+function isProgramRaceDetailed(race = selectedRace) {
+  const cachedRace = dynamicPrograms[getProgramKey()]?.races
+    .find((item) => item.race === race);
+  return Boolean(cachedRace?.detailed);
+}
+
 function normalizeOfficialRacers(racers) {
   return racers.map((racer, index) => {
     const registration = Number(racer.registration);
@@ -655,17 +751,18 @@ async function loadOfficialProgram(signal) {
   return loadOfficialProgramForRace(selectedRace, signal, MAIN_PROGRAM_TIMEOUT_MS);
 }
 
-async function loadOfficialProgramForRace(race, signal, timeoutMs = REQUEST_TIMEOUT_MS) {
+async function loadOfficialProgramForRace(race, signal, timeoutMs = REQUEST_TIMEOUT_MS, forceDetail = false) {
   const key = getProgramKey();
   const cached = dynamicPrograms[key];
   const cachedRace = cached?.races.find((item) => item.race === race);
   const hasUsableCachedRace = cachedRace && Array.isArray(cachedRace.racers) && cachedRace.racers.length === 6;
-  if (cachedRace?.detailed || hasUsableCachedRace) return cached;
+  if (cachedRace?.detailed || (!forceDetail && hasUsableCachedRace)) return cached;
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
+  const fast = forceDetail ? "0" : "1";
   let program;
   try {
     const response = await fetchWithTimeout(
-      `/api/program?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}&race=${race}`,
+      `/api/program?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}&race=${race}&fast=${fast}`,
       { signal, timeoutMs }
     );
     if (!response.ok) throw new Error(`公式データ取得エラー: ${response.status}`);
@@ -694,6 +791,7 @@ async function loadOfficialProgramForRace(race, signal, timeoutMs = REQUEST_TIME
     cached.available = program.available;
   }
   storeProgram(key);
+  invalidatePerformanceCache();
   return dynamicPrograms[key];
 }
 
@@ -770,8 +868,11 @@ function renderVenueOptions() {
   const statuses = venueStatusByDate[dateInput.value] || {};
   const statusValues = Object.values(statuses);
   const activeCount = statusValues.filter((status) => status.available).length;
+  const hasVenueStatus = statusValues.length > 0;
+  const activeIndexes = new Set(getActiveVenueIndexes(dateInput.value));
+  const shouldFilterVenues = hasVenueStatus && activeCount > 0 && !showAllVenues;
   venueSelect.innerHTML = "";
-  venues.forEach((venue, index) => {
+  const appendOption = (venue, index) => {
     const jcd = String(index + 1).padStart(2, "0");
     const status = statuses[jcd];
     const marker = status?.available ? "● " : status ? "　 " : "";
@@ -780,13 +881,48 @@ function renderVenueOptions() {
     option.value = index;
     option.textContent = `${marker}${String(index + 1).padStart(2, "0")} ${venue.name}${suffix}`;
     option.dataset.available = status?.available ? "true" : "false";
+    if (hasVenueStatus && !status?.available) option.disabled = shouldFilterVenues;
     venueSelect.append(option);
-  });
-  venueSelect.value = selected;
+  };
+  const appendDivider = (label) => {
+    const option = document.createElement("option");
+    option.disabled = true;
+    option.textContent = label;
+    venueSelect.append(option);
+  };
+  if (shouldFilterVenues) {
+    appendDivider(`本日開催（${activeCount}場）`);
+    venues.forEach((venue, index) => {
+      if (activeIndexes.has(index)) appendOption(venue, index);
+    });
+    const option = document.createElement("option");
+    option.value = "__show_all__";
+    option.textContent = "他の会場を見る ▼";
+    venueSelect.append(option);
+  } else if (hasVenueStatus && activeCount > 0) {
+    appendDivider(`本日開催（${activeCount}場）`);
+    venues.forEach((venue, index) => {
+      if (activeIndexes.has(index)) appendOption(venue, index);
+    });
+    appendDivider(`本日休場（${venues.length - activeCount}場）`);
+    venues.forEach((venue, index) => {
+      if (!activeIndexes.has(index)) appendOption(venue, index);
+    });
+  } else {
+    venues.forEach(appendOption);
+  }
+  if ([...venueSelect.options].some((option) => option.value === selected && !option.disabled)) {
+    venueSelect.value = selected;
+  } else {
+    const firstSelectable = [...venueSelect.options].find((option) => !option.disabled && option.value !== "__show_all__");
+    if (firstSelectable) venueSelect.value = firstSelectable.value;
+  }
   const hint = document.querySelector("#venueStatusHint");
   if (hint) {
-    hint.textContent = statusValues.length
-      ? `● 開催あり ${activeCount}場 / ${formatDate(dateInput.value)}`
+    hint.textContent = hasVenueStatus
+      ? activeCount
+        ? `● 開催あり ${activeCount}場 / ${showAllVenues ? "全会場表示中" : "開催会場のみ表示"}`
+        : `${formatDate(dateInput.value)} は開催場をまだ確認できていません`
       : "開催場を確認中...";
   }
 }
@@ -845,6 +981,27 @@ function buildRacerComment(racer) {
     return "展示タイムはやや重め。直前気配の上積みを確認したい。";
   }
   return "総合力は拮抗。展開とスタート次第で着順が動きそう。";
+}
+
+function renderLaneProfileStat(racer) {
+  const stat = racer.laneStat || {};
+  const races = Number(stat.races) || 0;
+  const winRate = Number(stat.winRate);
+  const baseline = Number(racer.laneBaseline);
+  if (!Number.isFinite(winRate) || races < 6) {
+    return `<span class="lane-profile insufficient">データ不足<small>n=${races}</small></span>`;
+  }
+  const diff = Number.isFinite(baseline) ? winRate - baseline : 0;
+  const badge = !Number.isFinite(baseline) || Math.abs(diff) < .025
+    ? "平均並み"
+    : diff > 0 ? "↑得意" : "↓苦手";
+  const className = diff > .025 ? "up" : diff < -.025 ? "down" : "flat";
+  return `
+    <span class="lane-profile ${className}">
+      <b>${(winRate * 100).toFixed(0)}%</b>
+      <small>n=${races} ${badge}</small>
+    </span>
+  `;
 }
 
 function calculateWeatherImpact(boat, wind, wave, direction, weatherLabel) {
@@ -933,20 +1090,27 @@ function setupControls() {
   dateInput.min = toInputDate(historyStart);
   dateInput.max = toInputDate(tomorrow);
   dateInput.value = isDayCompleted(todayString) ? toInputDate(tomorrow) : todayString;
-  dateInput.addEventListener("change", () => {
-    renderVenueOptions();
-    refreshVenueStatus(dateInput.value);
-    renderRecentDates();
-    updateRaceButtonStates();
-    updateActionButton();
-    loadResultBoard();
-    runPrediction(true);
-  });
+	  dateInput.addEventListener("change", () => {
+	    showAllVenues = false;
+	    renderVenueOptions();
+	    renderRecentDates();
+	    updateRaceButtonStates();
+	    updateActionButton();
+	    loadResultBoard();
+	    lastBoardSyncAt = Date.now();
+	    refreshVenueStatus(dateInput.value).finally(() => runPrediction(true));
+	  });
   venueSelect.addEventListener("change", () => {
+    if (venueSelect.value === "__show_all__") {
+      showAllVenues = true;
+      renderVenueOptions();
+      return;
+    }
     renderRecentDates();
     updateRaceButtonStates();
     updateActionButton();
     loadResultBoard();
+    lastBoardSyncAt = Date.now();
     runPrediction(true);
   });
 
@@ -967,6 +1131,7 @@ function setupControls() {
   renderRecentDates();
   refreshVenueStatus(dateInput.value);
   loadResultBoard();
+  lastBoardSyncAt = Date.now();
   updateRaceButtonStates();
 }
 
@@ -1052,7 +1217,7 @@ function getVerifiedResult(race) {
   const dynamic = dynamicResults[`${getProgramKey()}-${race}`];
   if (isValidOfficialResult(dynamic)) return dynamic;
   const dayResults = getDayResults();
-  const stored = dayResults?.[race - 1] || null;
+  const stored = dayResults?.[race - 1] || dayResults?.[String(race)] || null;
   return isValidOfficialResult(stored) ? stored : null;
 }
 
@@ -1165,6 +1330,13 @@ function buildRaceData(race = selectedRace) {
   const direction = officialWeather.windDirection || "";
   const venueProfile = getVenueCourseProfile(venue);
   const learnedVenue = learningWeights[venue.name] || {};
+  const learningSamples = Number(learnedVenue.samples) || 0;
+  const learnedLeaderHitRate = learningSamples >= 10
+    ? normalizeLearningRate(learnedVenue.leaderHitRate)
+    : null;
+  const leaderReliabilityPenalty = learnedLeaderHitRate !== null
+    ? -Math.max(0, .25 - learnedLeaderHitRate) * 3
+    : 0;
   const phase = getPredictionPhase(race);
   const hasExhibition = officialRace.racers.every((racer) =>
     Number.isFinite(beforeinfo[racer.boat]?.exhibition)
@@ -1176,6 +1348,13 @@ function buildRaceData(race = selectedRace) {
 
   const racers = officialRace.racers.map((officialRacer) => {
     const { boat, name, registration, grade, national, local, motor } = officialRacer;
+    const laneStat = officialRacer.laneStat || null;
+    const laneBaseline = Number.isFinite(Number(officialRacer.laneBaseline))
+      ? Number(officialRacer.laneBaseline)
+      : null;
+    const recentFinishes = Array.isArray(officialRacer.recentFinishes)
+      ? officialRacer.recentFinishes
+      : [];
     const live = beforeinfo[boat] || {};
     const exhibition = phase.exhibitionAvailable ? live.exhibition : null;
     const condition = null;
@@ -1183,9 +1362,10 @@ function buildRaceData(race = selectedRace) {
     const courseBase = [26, 17, 13, 10, 7, 5][boat - 1];
     const weatherImpact = calculateWeatherImpact(boat, wind, wave, direction, weather.label);
     const venueImpact = calculateVenueCourseImpact(venue, boat, wind, wave);
-    const learningImpact = boat === 1
+    const learningImpact = (boat === 1
       ? -(learnedVenue.innerPenaltyAdjust || 0)
-      : boat >= 3 ? (learnedVenue.thirdCoverageBoost || 0) * .35 : 0;
+      : boat >= 3 ? (learnedVenue.thirdCoverageBoost || 0) * .35 : 0)
+      + (boat === 1 ? leaderReliabilityPenalty : 0);
     const localBoost = (local - national) * 3.2 * venue.home;
     const gradeBoost = grade === "A1" ? 7 : grade === "A2" ? 3 : grade === "B2" ? -2 : 0;
     const baseModelScore = courseBase
@@ -1225,6 +1405,9 @@ function buildRaceData(race = selectedRace) {
       weatherNote: weatherImpact.note,
       venueImpact: venueImpact.score,
       venueNote: venueImpact.note,
+      laneStat,
+      laneBaseline,
+      recentFinishes,
       learningImpact,
       tilt: live.tilt,
       parts: live.parts,
@@ -1234,7 +1417,14 @@ function buildRaceData(race = selectedRace) {
       officialSignal,
       comment: ""
     };
-  });
+	  });
+  if (leaderReliabilityPenalty < 0 && racers.length) {
+    const modelLeader = [...racers].sort((a, b) => b.modelScore - a.modelScore)[0];
+    if (modelLeader && modelLeader.boat !== 1) {
+      modelLeader.modelScore += leaderReliabilityPenalty;
+      modelLeader.learningImpact += leaderReliabilityPenalty;
+    }
+  }
   racers.forEach((racer) => { racer.comment = buildRacerComment(racer); });
 
   const officialOrder = [...racers].sort((a, b) => {
@@ -1487,6 +1677,7 @@ function renderRace(data) {
       <td>${racer.exhibitionAvailable ? racer.exhibition.toFixed(2) : '<span class="exhibition-pending">未公開</span>'}</td>
       <td><span class="exhibition-impact ${racer.exhibitionImpact > 1 ? "up" : racer.exhibitionImpact < -1 ? "down" : "flat"}">${racer.exhibitionAvailable ? `${racer.exhibitionImpact >= 0 ? "+" : ""}${racer.exhibitionImpact.toFixed(1)}` : "対象外"}</span></td>
       <td><span class="exhibition-impact ${racer.weatherImpact > .8 ? "up" : racer.weatherImpact < -.8 ? "down" : "flat"}">${racer.weatherImpact >= 0 ? "+" : ""}${racer.weatherImpact.toFixed(1)}</span></td>
+      <td>${renderLaneProfileStat(racer)}</td>
       <td><span class="official-mark ${["main", "second", "third", "fourth"][racer.officialRank - 1] || ""}">${racer.officialMark || "―"}</span></td>
       <td class="ai-score">${racer.aiScore}</td>
       <td>
@@ -1766,6 +1957,12 @@ function ensurePickCount(primary, fallback, count, usedKeys) {
   return selected;
 }
 
+function normalizeLearningRate(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return numeric > 1 ? numeric / 100 : numeric;
+}
+
 function buildLeaderFormationPicks(scoredPicks, data, leader) {
   if (!leader) return [];
   const supportBoats = data.ranking
@@ -1816,6 +2013,11 @@ function buildTicketStrategyGroups(data) {
   const laneOne = data.racers.find((racer) => racer.boat === 1);
   const predictedLeader = data.ranking[0];
   const learned = data.learnedVenue || {};
+  const learningSamples = Number(learned.samples) || 0;
+  const learnedHitRate = learningSamples >= 10 ? normalizeLearningRate(learned.hitRate) : null;
+  const learnedExactaHitRate = learningSamples >= 10 ? normalizeLearningRate(learned.exactaHitRate) : null;
+  const hitRateHonmeiAdjust = learnedHitRate !== null ? (learnedHitRate - .15) * 4 : 0;
+  const exactaNeraiAdjust = learnedExactaHitRate !== null ? (learnedExactaHitRate - .3) * 5 : 0;
   const upsetSignal = laneOne ? 100 - laneOne.probability : 50;
   const withScores = candidates.map((pick) => {
     const agreement = pick.ticket.filter((racer) => officialBoats.has(racer.boat)).length;
@@ -1826,8 +2028,9 @@ function buildTicketStrategyGroups(data) {
     const firstPopularity = pick.ticket[0].popularity;
     const oddsScore = Math.log(Math.max(2, pick.estimatedOdds));
     const lowProbabilityBonus = clamp(3.2 - pick.probability, 0, 3.2);
-    const edgeBonus = Math.max(0, pick.valueScore - 100);
-    const torigamiPenalty = pick.estimatedOdds < 7 ? (7 - pick.estimatedOdds) * 9 : 0;
+	    const edgeBonus = Math.max(0, pick.valueScore - 100);
+	    const marketEdgeBonus = Math.max(0, pick.edgeScore || 0);
+	    const torigamiPenalty = pick.estimatedOdds < 7 ? (7 - pick.estimatedOdds) * 9 : 0;
     return {
       ...pick,
       agreement,
@@ -1837,14 +2040,15 @@ function buildTicketStrategyGroups(data) {
       favoriteCount,
       firstPopularity,
       oddsScore,
-      lowProbabilityBonus,
-      edgeBonus,
-      torigamiPenalty,
-      honmeiScore: pick.valueScore * 1.45 + pick.probability * 2.1 + agreement * 3 + topCount * 1.4 + pick.footScore * 1.2 + (learned.thirdCoverageBoost || 0) * .8 - torigamiPenalty,
-      neraiScore: pick.valueScore * (1.8 + (learned.valueBoost || 0) * .08) + edgeBonus * 1.4 + oddsScore * 8 + topCount * 2 + pick.footScore * 1.5 - Math.abs(pick.probability - 1.8) * 3,
-      anaScore: pick.valueScore * (.95 + (learned.valueBoost || 0) * .06) + oddsScore * 16 + lowProbabilityBonus * 8 + popularityRisk * 1.4 + outsideCount * 5 + Math.max(0, upsetSignal - 65) * .7 - favoriteCount * 3 - agreement * 1.2
-    };
-  });
+	      lowProbabilityBonus,
+	      edgeBonus,
+	      marketEdgeBonus,
+	      torigamiPenalty,
+	      honmeiScore: pick.valueScore * 1.45 + pick.probability * 2.1 + agreement * 3 + topCount * 1.4 + pick.footScore * 1.2 + marketEdgeBonus * 4 + (learned.thirdCoverageBoost || 0) * .8 + hitRateHonmeiAdjust - torigamiPenalty,
+	      neraiScore: pick.valueScore * (1.8 + (learned.valueBoost || 0) * .08) + edgeBonus * 1.4 + marketEdgeBonus * 11 + oddsScore * 8 + topCount * 2 + pick.footScore * 1.5 + exactaNeraiAdjust - Math.abs(pick.probability - 1.8) * 3,
+	      anaScore: pick.valueScore * (.95 + (learned.valueBoost || 0) * .06) + marketEdgeBonus * 13 + oddsScore * 16 + lowProbabilityBonus * 8 + popularityRisk * 1.4 + outsideCount * 5 + Math.max(0, upsetSignal - 65) * .7 - favoriteCount * 3 - agreement * 1.2
+	    };
+	  });
   const usedKeys = new Set();
   const leaderAxisPool = [...withScores]
     .filter((pick) => pick.ticket[0].boat === predictedLeader.boat)
@@ -1876,13 +2080,19 @@ function buildTicketStrategyGroups(data) {
     .sort((a, b) => b.neraiScore - a.neraiScore);
   const nerai = ensurePickCount(neraiPool, neraiFallback, STRATEGY_CONFIG.nerai.count, usedKeys);
 
-  const anaPool = withScores
-    .filter((pick) =>
-      pick.valueScore >= 85
-      && pick.estimatedOdds >= 25
-      && pick.probability <= 2.4
-      && upsetSignal >= 58
-      && (
+	  const roughVenue = (data.venueProfile?.upsetBonus || 0) >= 8
+	    || (Number.isFinite(data.wind) && data.wind >= 6)
+	    || (Number.isFinite(data.wave) && data.wave >= 5);
+	  const anaValueThreshold = roughVenue ? 78 : 85;
+	  const anaOddsThreshold = roughVenue ? 18 : 25;
+	  const anaUpsetThreshold = roughVenue ? 52 : 58;
+	  const anaPool = withScores
+	    .filter((pick) =>
+	      pick.valueScore >= anaValueThreshold
+	      && pick.estimatedOdds >= anaOddsThreshold
+	      && pick.probability <= 2.4
+	      && upsetSignal >= anaUpsetThreshold
+	      && (
         pick.outsideCount >= 1
         || pick.firstPopularity >= 3
         || pick.popularityRisk >= 11
@@ -1902,45 +2112,59 @@ function buildTicketStrategyGroups(data) {
 }
 
 function buildExactaPicks(data) {
-  const used = new Set();
-  const fromTrifecta = buildTicketCandidates(data)
-    .map((pick) => {
-      const ticket = pick.ticket.slice(0, 2);
-      const key = ticket.map((racer) => racer.boat).join("-");
-      return {
-        ticket,
-        probability: pick.pairProbability,
-        estimatedOdds: clamp(pick.estimatedOdds / 3.8, 1.2, 80),
-        valueScore: pick.pairProbability * clamp(pick.estimatedOdds / 3.8, 1.2, 80),
-        actualOdds: false,
-        sourceKey: key,
-      };
-    })
-    .filter((pick) => {
-      if (used.has(pick.sourceKey)) return false;
-      used.add(pick.sourceKey);
-      return true;
-    });
-  const leaders = data.ranking.slice(0, 3);
-  const fallback = [];
-  leaders.forEach((first) => {
-    data.ranking
-      .filter((second) => second.boat !== first.boat)
-      .slice(0, 4)
-      .forEach((second) => {
-        const probability = clamp((first.probability / 100) * (second.probability / Math.max(1, 100 - first.probability)) * 100 * 1.35, .1, 42);
-        const estimatedOdds = clamp(.78 / Math.max(.004, probability / 100), 1.2, 80);
-        fallback.push({
-          ticket: [first, second],
-          probability,
-          estimatedOdds,
-          valueScore: probability * estimatedOdds,
-          actualOdds: false,
-          sourceKey: `${first.boat}-${second.boat}`,
-        });
-      });
-  });
-  return ensurePickCount(fromTrifecta, fallback, 3, new Set())
+  const learned = data.learnedVenue || {};
+  const learningSamples = Number(learned.samples) || 0;
+  const learnedExactaHitRate = learningSamples >= 10 ? normalizeLearningRate(learned.exactaHitRate) : null;
+  const exactaRateAdjust = learnedExactaHitRate !== null ? (learnedExactaHitRate - .3) * 5 : 0;
+  const publicScores = data.ranking.map((racer) =>
+    Math.exp(((7 - racer.popularity) * 1.2 + (7 - racer.boat) * .25) / 3.1)
+  );
+  const publicTotal = publicScores.reduce((sum, score) => sum + score, 0);
+  const publicProbability = new Map(
+    data.ranking.map((racer, index) => [racer.boat, publicScores[index] / publicTotal])
+  );
+  const candidates = permutations(data.ranking, 2).map((ticket) => {
+    const [first, second] = ticket;
+    const probability = clamp(
+      (first.probability / 100)
+      * (second.probability / Math.max(1, 100 - first.probability))
+      * 100
+      * 1.35,
+      .1,
+      42
+    );
+    const firstPublic = publicProbability.get(first.boat);
+    const secondPublic = publicProbability.get(second.boat) / Math.max(.01, 1 - firstPublic);
+    const marketChance = clamp(firstPublic * secondPublic * 1.25, .002, .6);
+    const modelChance = probability / 100;
+    const estimatedOdds = clamp(.78 / Math.max(.004, modelChance * .68 + marketChance * .32), 1.2, 80);
+    const edgeProbability = modelChance - marketChance;
+    const edgeScore = edgeProbability * 100;
+    const footScore = ticket.reduce((sum, racer, index) => {
+      const orderWeight = index === 0 ? 1.2 : 1;
+      return sum + (
+        racer.exhibitionImpact * 1.8
+        + racer.weatherImpact * 1.1
+        + racer.venueImpact * 1.35
+        + (racer.motor - 35) * .08
+        + (0.18 - racer.start) * 18
+      ) * orderWeight;
+    }, 0);
+    return {
+      ticket,
+      probability,
+      estimatedOdds,
+      valueScore: probability * estimatedOdds,
+      marketProbability: marketChance,
+      edgeProbability,
+      edgeScore,
+      exactaScore: probability * 3 + exactaRateAdjust + footScore + Math.max(0, edgeScore) * 9,
+      footScore,
+      actualOdds: false,
+      sourceKey: `${first.boat}-${second.boat}`,
+    };
+  }).sort((a, b) => b.exactaScore - a.exactaScore);
+  return ensurePickCount(candidates, candidates, 3, new Set())
     .map((pick, index) => ({
       ...pick,
       strategyKey: "exacta",
@@ -2025,12 +2249,15 @@ function buildTicketCandidates(data) {
     const secondPublic = publicProbability.get(second.boat) / Math.max(.01, 1 - firstPublic);
     const thirdPublic = publicProbability.get(third.boat) / Math.max(.01, 1 - firstPublic - publicProbability.get(second.boat));
     const ticketKey = ticket.map((racer) => racer.boat).join("-");
-    const actualOdds = data.oddsMap?.[ticketKey];
-    const rawMarketChance = clamp(firstPublic * secondPublic * thirdPublic * 1.65, .0005, .35);
-    const modelChance = probability / 100;
-    const marketChance = modelChance * .72 + rawMarketChance * .28;
-    const estimatedOdds = actualOdds || clamp(.76 / marketChance, 2.1, 250);
-    const valueScore = probability * estimatedOdds;
+	    const actualOdds = data.oddsMap?.[ticketKey];
+	    const rawMarketChance = clamp(firstPublic * secondPublic * thirdPublic * 1.65, .0005, .35);
+	    const modelChance = probability / 100;
+	    const marketChance = modelChance * .72 + rawMarketChance * .28;
+	    const estimatedOdds = actualOdds || clamp(.76 / marketChance, 2.1, 250);
+	    const marketProbability = actualOdds ? 1 / actualOdds : marketChance;
+	    const edgeProbability = modelChance - marketProbability;
+	    const edgeScore = edgeProbability * 100;
+	    const valueScore = probability * estimatedOdds;
     const footScore = ticket.reduce((sum, racer, index) => {
       const orderWeight = index === 0 ? 1.25 : index === 1 ? 1 : .8;
       return sum + (
@@ -2041,9 +2268,20 @@ function buildTicketCandidates(data) {
         + (0.18 - racer.start) * 18
       ) * orderWeight;
     }, 0);
-    return { ticket, probability, pairProbability, estimatedOdds, valueScore, footScore, actualOdds: Boolean(actualOdds) };
-  })
-    .sort((a, b) => b.valueScore - a.valueScore);
+	    return {
+	      ticket,
+	      probability,
+	      pairProbability,
+	      estimatedOdds,
+	      valueScore,
+	      marketProbability,
+	      edgeProbability,
+	      edgeScore,
+	      footScore,
+	      actualOdds: Boolean(actualOdds)
+	    };
+	  })
+	    .sort((a, b) => (b.valueScore + Math.max(0, b.edgeScore) * 18) - (a.valueScore + Math.max(0, a.edgeScore) * 18));
 }
 
 function buildInvestmentProfile(data) {
@@ -2092,14 +2330,29 @@ function buildBetDecision(data, groups = buildTicketStrategyGroups(data), race =
   const leaderGap = data.ranking[0].probability - data.ranking[1].probability;
   const tendency = buildRaceRanking(data).find((item) => item.race === race) || { solid: 50, upset: 50 };
   const waterRisk = (Number.isFinite(data.wind) ? data.wind : 0) + (Number.isFinite(data.wave) ? data.wave * .7 : 0);
+  const roughVenue = (data.venueProfile?.upsetBonus || 0) >= 8
+    || (Number.isFinite(data.wind) && data.wind >= 6)
+    || (Number.isFinite(data.wave) && data.wave >= 5);
+  const miokuriValueThreshold = roughVenue ? 80 : 72;
+  const anaValueThreshold = roughVenue ? 78 : 88;
+  const anaTendencyThreshold = roughVenue ? 58 : 66;
+  const anaOddsThreshold = roughVenue ? 18 : 25;
   const topHonmei = groups.find((group) => group.key === "honmei")?.picks?.[0];
   const topAna = groups.find((group) => group.key === "ana")?.picks?.[0];
 
-  if (!best || best.valueScore < 72) {
-    return { key: "miokuri", label: "見送り", buy: false, strategyKeys: [], text: "期待値が低く、買うほど回収率を削りやすいレースです。" };
-  }
-  if (topAna && tendency.upset >= 66 && topAna.estimatedOdds >= 25 && laneOne?.probability < 30 && topAna.valueScore >= 88) {
+  if (topAna && tendency.upset >= anaTendencyThreshold && topAna.estimatedOdds >= anaOddsThreshold && laneOne?.probability < 30 && topAna.valueScore >= anaValueThreshold) {
     return { key: "ana", label: "穴狙い", buy: true, strategyKeys: BET_MODE_CONFIG.ana.strategyKeys, text: `穴気配${Math.round(tendency.upset)}。高配当候補を穴3点で狙う判断です。` };
+  }
+  if (!best || best.valueScore < miokuriValueThreshold) {
+    return {
+      key: "miokuri",
+      label: "見送り",
+      buy: false,
+      strategyKeys: [],
+      text: roughVenue
+        ? `荒れ水面・荒れ会場補正で見送り基準を${miokuriValueThreshold}まで上げています。最高期待値${best?.valueScore?.toFixed(0) || "―"}では無理しません。`
+        : "期待値が低く、買うほど回収率を削りやすいレースです。"
+    };
   }
   if (best.valueScore >= 115 && positiveCount >= 1 && waterRisk <= 10) {
     return { key: "shobu", label: "勝負", buy: true, strategyKeys: BET_MODE_CONFIG.shobu.strategyKeys, text: `期待値${best.valueScore.toFixed(0)}、妙味候補${positiveCount}点。本命5点＋狙い目3点で勝負します。` };
@@ -2122,10 +2375,11 @@ function renderValuePicks(data) {
       <div class="value-combination">
         ${pick.ticket.map((racer, ticketIndex) => `${ticketIndex ? "<i>›</i>" : ""}${boatBadge(racer.boat, true)}`).join("")}
       </div>
-      <div class="value-stats">
-        <div class="value-stat"><small>AI予測確率</small><strong>${pick.probability.toFixed(2)}%</strong></div>
-        <div class="value-stat"><small>${pick.actualOdds ? "公式オッズ" : "推定オッズ"}</small><strong>${pick.estimatedOdds.toFixed(1)}</strong></div>
-      </div>
+	      <div class="value-stats">
+	        <div class="value-stat"><small>AI予測確率</small><strong>${pick.probability.toFixed(2)}%</strong></div>
+	        <div class="value-stat"><small>${pick.actualOdds ? "公式オッズ" : "推定オッズ"}</small><strong>${pick.estimatedOdds.toFixed(1)}</strong></div>
+	        <div class="value-stat"><small>市場差</small><strong>${(pick.edgeScore || 0) >= 0 ? "+" : ""}${(pick.edgeScore || 0).toFixed(2)}pt</strong></div>
+	      </div>
       <div class="value-score"><span>期待値スコア</span><strong>${pick.valueScore.toFixed(0)}</strong></div>
       <span class="value-judgement${pick.valueScore < 100 ? " watch" : ""}">${pick.valueScore >= 100 ? "期待値あり" : "見送り寄り"}</span>
     </article>
@@ -2188,11 +2442,14 @@ function getPrimaryPredictionForRace(race) {
   const groups = buildTicketStrategyGroups(raceData);
   const betDecision = buildBetDecision(raceData, groups, race);
   const exactaPicks = buildExactaPicks(raceData).map((pick) => ({
-    ticket: pick.ticket.map((racer) => racer.boat),
-    probability: pick.probability,
-    estimatedOdds: pick.estimatedOdds,
-    actualOdds: pick.actualOdds,
-    valueScore: pick.valueScore,
+	    ticket: pick.ticket.map((racer) => racer.boat),
+	    probability: pick.probability,
+	    estimatedOdds: pick.estimatedOdds,
+	    actualOdds: pick.actualOdds,
+	    marketProbability: pick.marketProbability,
+	    edgeProbability: pick.edgeProbability,
+	    edgeScore: pick.edgeScore,
+	    valueScore: pick.valueScore,
     strategyKey: pick.strategyKey,
     strategyLabel: pick.strategyLabel,
     strategyIndex: pick.strategyIndex,
@@ -2203,10 +2460,12 @@ function getPrimaryPredictionForRace(race) {
       probability: pick.probability,
       pairProbability: pick.pairProbability,
       estimatedOdds: pick.estimatedOdds,
-      actualOdds: pick.actualOdds,
-      oddsSource: pick.actualOdds ? "official" : "estimated",
-      marketProbability: pick.actualOdds && pick.estimatedOdds ? 1 / pick.estimatedOdds : null,
-      valueScore: pick.valueScore,
+	      actualOdds: pick.actualOdds,
+	      oddsSource: pick.actualOdds ? "official" : "estimated",
+	      marketProbability: Number.isFinite(pick.marketProbability) ? pick.marketProbability : (pick.actualOdds && pick.estimatedOdds ? 1 / pick.estimatedOdds : null),
+	      edgeProbability: pick.edgeProbability,
+	      edgeScore: pick.edgeScore,
+	      valueScore: pick.valueScore,
       footScore: pick.footScore,
       strategyKey: group.key,
       strategyLabel: group.label,
@@ -2361,103 +2620,6 @@ function getDailyPerformanceTotals() {
   return totals;
 }
 
-function getKorogashiGameCandidate(totals = getDailyPerformanceTotals()) {
-  const candidates = [];
-  totals.rows.forEach((row) => {
-    const exactaPicks = row.prediction.exactaPicks || [];
-    if (!exactaPicks.length) return;
-    const topExacta = exactaPicks[0];
-    const decision = row.betDecision || { key: "miokuri", label: "見送り", buy: false };
-    const tendency = buildRaceRanking(row.prediction.data).find((item) => item.race === row.race) || {};
-    const confidence = exactaPicks.reduce((sum, pick) => sum + pick.probability, 0) * 2.2
-      + topExacta.valueScore * .24
-      + (decision.buy ? 14 : -8)
-      + Math.max(0, (tendency.solid || 50) - 55) * .35;
-    candidates.push({
-      row,
-      pick: topExacta,
-      exactaPicks,
-      decision,
-      confidence,
-    });
-  });
-  return candidates.sort((a, b) => b.confidence - a.confidence)[0] || null;
-}
-
-function renderKorogashiGame(payload) {
-  const badge = document.querySelector("#korogashiGameBadge");
-  const content = document.querySelector("#korogashiGameContent");
-  if (!badge || !content) return;
-  if (!payload || !payload.summary || !payload.summary.days) {
-    badge.textContent = "未集計";
-    badge.className = "watch";
-    content.innerHTML = `<p class="performance-empty">2連単予測と確定結果が保存されると、月間コロガシ収支を表示します。</p>`;
-    return;
-  }
-  const { summary } = payload;
-  const latestDay = payload.daily[payload.daily.length - 1];
-  const bestDay = summary.bestDay;
-  const latestHistory = latestDay?.history || [];
-  const netClass = summary.net >= 0 ? "plus" : "minus";
-  const periodLabel = payload.periodStart && payload.periodEnd
-    ? `${payload.periodStart}〜${payload.periodEnd}`
-    : `${payload.month} 月間`;
-  badge.textContent = `${payload.month} 月間`;
-  badge.className = netClass === "plus" ? "buy" : "watch";
-  content.innerHTML = `
-    <article class="korogashi-main ${netClass}">
-      <div>
-        <small>全会場 月間コロガシ / ${periodLabel}</small>
-        <h3>${formatSignedYen(summary.net)}</h3>
-        <p>月末で締めて翌月1日に0円へリセット。毎日1,000円から始め、全会場の保存済み2連単予測から勝負します。的中したら残高を次レースへ全額コロガシ、外れた日は0円で終了します。</p>
-      </div>
-      <div class="korogashi-ticket korogashi-month-result">
-        <strong>${formatYen(summary.returnTotal)}</strong>
-        <span>総スタート ${formatYen(summary.startTotal)}</span>
-      </div>
-    </article>
-    <div class="korogashi-game-stats">
-      <span><small>集計日数</small><b>${summary.days}日</b></span>
-      <span><small>勝負回数</small><b>${summary.bets}回</b></span>
-      <span><small>最高連勝</small><b>${summary.maxStreak}連勝</b></span>
-      <span class="${netClass}"><small>月間収支</small><b>${formatSignedYen(summary.net)}</b></span>
-    </div>
-    <div class="korogashi-month-days">
-      <article>
-        <small>ベスト日</small>
-        <b>${bestDay ? `${bestDay.date} / ${formatYen(bestDay.end)}` : "なし"}</b>
-        <span>${bestDay ? `${bestDay.maxStreak}連勝・収支${formatSignedYen(bestDay.net)}` : "まだ集計できません"}</span>
-      </article>
-      <article>
-        <small>直近日</small>
-        <b>${latestDay ? `${latestDay.date} / ${formatSignedYen(latestDay.net)}` : "なし"}</b>
-        <span>${latestHistory.length ? latestHistory.map((item) => `${item.venue || ""}${item.race}R ${item.hit ? "的中" : "終了"} ${item.after.toLocaleString("ja-JP")}円`).join(" / ") : "履歴なし"}</span>
-      </article>
-    </div>
-  `;
-}
-
-async function loadKorogashiMonth() {
-  const badge = document.querySelector("#korogashiGameBadge");
-  if (!badge || !dateInput.value || !venueSelect.value) return;
-  const requestId = ++korogashiMonthRequestId;
-  const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
-  badge.textContent = "集計中";
-  try {
-    const response = await fetchWithTimeout(
-      `/api/korogashi-month?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}`,
-      { timeoutMs: 5000 }
-    );
-    const payload = await response.json();
-    if (requestId !== korogashiMonthRequestId) return;
-    renderKorogashiGame(payload);
-  } catch (error) {
-    if (requestId !== korogashiMonthRequestId) return;
-    badge.textContent = "取得失敗";
-    renderKorogashiGame(null);
-  }
-}
-
 function renderTicketText(ticket) {
   return ticket.join("-");
 }
@@ -2561,13 +2723,14 @@ function renderResultBoard(payload) {
     .map((key) => ({ key, ...(payload.summary[key] || {}) }));
   const judged = items.reduce((max, item) => Math.max(max, Number(item.races) || 0), 0);
   status.textContent = judged ? `${judged}R判定` : "未確定";
-  summary.innerHTML = items.map((item) => `
-    <article class="result-board-stat ${item.available === false ? "disabled" : item.key}">
-      <small>${item.label || item.key}${item.points ? `${item.points}点` : ""}</small>
-      <strong>${item.available === false ? "未集計" : `${item.hitRaces || 0}本`}</strong>
-      <span>当選本数</span>
-    </article>
-  `).join("");
+	  summary.innerHTML = items.map((item) => `
+	    <article class="result-board-stat ${item.available === false ? "disabled" : item.key}">
+	      <small>${item.label || item.key}${item.points ? `${item.points}点` : ""}</small>
+	      <strong>${item.available === false ? "未集計" : `${item.hitRaces || 0}本`}</strong>
+	      <span>当選本数</span>
+	      <b>的中率 ${Math.round(Number(item.hitRate) || 0)}% / 回収率 ${Math.round(Number(item.roi) || 0)}%</b>
+	    </article>
+	  `).join("");
   const winnerRows = (payload.races || []).filter((row) => Array.isArray(row.hits) && row.hits.length);
   races.innerHTML = winnerRows.length ? winnerRows.map((row) => {
     const hits = Array.isArray(row.hits) ? row.hits : [];
@@ -2599,9 +2762,65 @@ function renderResultBoard(payload) {
   }).join("") : `<p class="performance-empty">この会場・日付では、保存済み予測の当選はまだありません。</p>`;
 }
 
-async function loadResultBoard() {
+function getResultBoardCacheKey() {
+  if (!dateInput.value || !venueSelect.value) return "";
+  const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
+  return `${dateInput.value}-${jcd}`;
+}
+
+function getResultBoardJudgedCount(payload) {
+  if (!payload || !payload.summary) return 0;
+  return Object.values(payload.summary)
+    .reduce((max, item) => Math.max(max, Number(item?.races) || 0), 0);
+}
+
+function getResultBoardCacheTtl(payload) {
+  return getResultBoardJudgedCount(payload) > 0
+    ? RESULT_BOARD_CONFIRMED_CACHE_MS
+    : RESULT_BOARD_PENDING_CACHE_MS;
+}
+
+function readStoredResultBoard(cacheKey) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(RESULT_BOARD_CACHE_KEY) || "null");
+    if (!stored || stored.key !== cacheKey || !stored.payload) return null;
+    return stored;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredResultBoard(cacheKey, payload) {
+  safeSetLocalStorage(
+    RESULT_BOARD_CACHE_KEY,
+    JSON.stringify({ savedAt: Date.now(), key: cacheKey, payload })
+  );
+}
+
+function invalidateResultBoardClientCache() {
+  Object.keys(resultBoardPayloadCache).forEach((key) => delete resultBoardPayloadCache[key]);
+  try {
+    localStorage.removeItem(RESULT_BOARD_CACHE_KEY);
+  } catch {
+    // Ignore unavailable storage.
+  }
+}
+
+async function loadResultBoard(options = {}) {
   const status = document.querySelector("#resultBoardStatus");
   if (!status || !dateInput.value || !venueSelect.value) return;
+  const { force = false } = options;
+  const cacheKey = getResultBoardCacheKey();
+  const memoryCached = resultBoardPayloadCache[cacheKey];
+  const storedCached = !memoryCached ? readStoredResultBoard(cacheKey) : null;
+  const cached = memoryCached || storedCached;
+  if (!force && cached) {
+    renderResultBoard(cached.payload);
+    const ttl = memoryCached ? RESULT_BOARD_CLIENT_CACHE_MS : getResultBoardCacheTtl(cached.payload);
+    if (Date.now() - cached.savedAt < ttl) return;
+  }
+  if (resultBoardInFlight) return;
+  resultBoardInFlight = true;
   const requestId = ++resultBoardRequestId;
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
   status.textContent = "読込中";
@@ -2612,11 +2831,18 @@ async function loadResultBoard() {
     );
     const payload = await response.json();
     if (requestId !== resultBoardRequestId) return;
+    resultBoardPayloadCache[cacheKey] = {
+      savedAt: Date.now(),
+      payload
+    };
+    writeStoredResultBoard(cacheKey, payload);
     renderResultBoard(payload);
   } catch (error) {
     if (requestId !== resultBoardRequestId) return;
     status.textContent = "取得失敗";
     renderResultBoard(null);
+  } finally {
+    resultBoardInFlight = false;
   }
 }
 
@@ -2661,7 +2887,10 @@ function saveLearningLog(rows) {
         exhibition: racer.exhibition,
         exhibitionImpact: racer.exhibitionImpact,
         weatherImpact: racer.weatherImpact,
-        venueImpact: racer.venueImpact
+        venueImpact: racer.venueImpact,
+        laneStat: racer.laneStat,
+        laneBaseline: racer.laneBaseline,
+        recentFinishes: racer.recentFinishes
       }))
     : [];
   const normalizeLearningOdds = (oddsMap) => {
@@ -2719,7 +2948,16 @@ function saveLearningLog(rows) {
     }
   });
   if (hasChanges) {
-    localStorage.setItem(LEARNING_LOG_KEY, JSON.stringify(stored));
+    const compactLearningLog = Object.fromEntries(
+      Object.entries(stored)
+        .sort(([, a], [, b]) => String(b.savedAt || "").localeCompare(String(a.savedAt || "")))
+        .slice(0, 240)
+    );
+    safeSetLocalStorage(
+      LEARNING_LOG_KEY,
+      JSON.stringify(stored),
+      JSON.stringify(compactLearningLog)
+    );
   }
   return postLearningEvents(serverEvents).then(() => ({ events: serverEvents.length }));
 }
@@ -2773,22 +3011,47 @@ function renderDailyPerformance(options = {}) {
     `対象は${formatDate(dateInput.value)} ${venues[Number(venueSelect.value)].name}。3連単は本命5点・狙い目3点・穴3点の合計11点で集計します。`;
   document.querySelector("#simulatedProfitNote").textContent =
     `判定済み${totals.judged}レースで、本命だけは5点、狙い目だけ・穴だけは各3点を${PERFORMANCE_BET_UNIT_YEN}円ずつ購入した場合の仮想収支です。払戻は公式3連単の100円あたり払戻で計算しています。`;
-  loadKorogashiMonth();
-  saveLearningLog(totals.rows)
-    .then(() => {
-      loadResultBoard();
-      loadKorogashiMonth();
-    })
-    .catch(() => {
-      loadResultBoard();
-      loadKorogashiMonth();
-    });
   if (renderList) renderPerformanceRaceList(totals.rows);
 }
 
 function schedulePerformanceRender(options = {}) {
   clearTimeout(performanceRenderTimer);
   performanceRenderTimer = setTimeout(() => renderDailyPerformance(options), 120);
+}
+
+function schedulePerformanceDataSync(requestId = predictionRequestId, delay = 700) {
+  clearTimeout(performanceSyncTimer);
+  performanceSyncTimer = setTimeout(() => syncPerformanceData(requestId), delay);
+}
+
+async function syncPerformanceData(requestId = predictionRequestId) {
+  if (requestId !== predictionRequestId) return;
+  if (performanceSyncInFlight) {
+    schedulePerformanceDataSync(requestId, 1200);
+    return;
+  }
+  performanceSyncInFlight = true;
+  let savedEvents = 0;
+  try {
+    const totals = getDailyPerformanceTotals();
+    const result = await saveLearningLog(totals.rows);
+    savedEvents = Number(result?.events) || 0;
+  } catch (error) {
+    if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
+  } finally {
+    if (requestId === predictionRequestId) {
+      const now = Date.now();
+      if (savedEvents > 0) {
+        invalidateResultBoardClientCache();
+        lastBoardSyncAt = now;
+        await loadResultBoard({ force: true });
+      } else if (now - lastBoardSyncAt >= BOARD_SYNC_MIN_INTERVAL_MS) {
+        lastBoardSyncAt = now;
+        await loadResultBoard();
+      }
+    }
+    performanceSyncInFlight = false;
+  }
 }
 
 async function runWithConcurrency(items, limit, worker, afterEach) {
@@ -2806,6 +3069,7 @@ async function runWithConcurrency(items, limit, worker, afterEach) {
 async function refreshDailyPerformanceResults(requestId) {
   if (performanceRefreshInFlight) {
     renderDailyPerformance({ renderList: false });
+    schedulePerformanceDataSync(requestId, 1200);
     return;
   }
   performanceRefreshInFlight = true;
@@ -2822,33 +3086,16 @@ async function refreshDailyPerformanceResults(requestId) {
       });
       if (requestId !== predictionRequestId) return;
       updateRaceButtonStates();
-      renderDailyPerformance({ renderList: false });
-    }
-
-    const remainingResultRaces = allRaces
-      .filter((race) => isRaceCompleted(race) && !getVerifiedResult(race));
-    if (remainingResultRaces.length) {
-      await runWithConcurrency(
-        remainingResultRaces,
-        4,
-        async (race) => {
-          await loadOfficialResultForRace(race, activeProgramController.signal).catch((error) => {
-            if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
-            return null;
-          });
-        },
-        () => {
-          if (requestId === predictionRequestId) schedulePerformanceRender({ renderList: false });
-        }
-      );
-      if (requestId !== predictionRequestId) return;
-      updateRaceButtonStates();
+      if (currentData) renderOfficialResult(currentData);
       renderDailyPerformance({ renderList: false });
     }
 
     renderDailyPerformance();
   } finally {
     performanceRefreshInFlight = false;
+    if (requestId === predictionRequestId) {
+      schedulePerformanceDataSync(requestId);
+    }
   }
 }
 
@@ -2857,14 +3104,14 @@ async function warmMissingPerformancePrograms(requestId, allRaces) {
   const key = getProgramKey();
   const missingProgramRaces = allRaces.filter((race) => {
     const cachedRace = dynamicPrograms[key]?.races.find((item) => item.race === race);
-    return !(cachedRace?.detailed || (Array.isArray(cachedRace?.racers) && cachedRace.racers.length === 6));
+    return !cachedRace?.detailed;
   });
   if (!missingProgramRaces.length) return;
   await runWithConcurrency(
     missingProgramRaces,
     2,
     async (race) => {
-      await loadOfficialProgramForRace(race, activeProgramController.signal, BACKGROUND_PROGRAM_TIMEOUT_MS).catch((error) => {
+      await loadOfficialProgramForRace(race, activeProgramController.signal, BACKGROUND_PROGRAM_TIMEOUT_MS, true).catch((error) => {
         if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
         return null;
       });
@@ -2926,7 +3173,7 @@ async function runAdminBatchSave() {
       });
       for (let race = 1; race <= 12; race += 1) {
         setBatchMessage(`${venueLabel} ${race}R を保存中...`);
-        await loadOfficialProgramForRace(race, activeProgramController.signal, BACKGROUND_PROGRAM_TIMEOUT_MS).catch((error) => {
+        await loadOfficialProgramForRace(race, activeProgramController.signal, BACKGROUND_PROGRAM_TIMEOUT_MS, true).catch((error) => {
           if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
           return null;
         });
@@ -2953,6 +3200,7 @@ function scheduleDailyPerformanceRefresh(requestId) {
   renderDailyPerformance({ renderList: false });
   schedulePerformanceRender({ renderList: true });
   if (!isPremiumMode) {
+    schedulePerformanceDataSync(requestId);
     return;
   }
   clearTimeout(performanceRefreshTimer);
@@ -2963,12 +3211,32 @@ function scheduleDailyPerformanceRefresh(requestId) {
   }, isPastDate() ? 1200 : 1800);
 }
 
+async function refreshProgramDetails(requestId, race = selectedRace) {
+  if (isProgramRaceDetailed(race)) return;
+  try {
+    await loadOfficialProgramForRace(race, activeProgramController.signal, BACKGROUND_PROGRAM_TIMEOUT_MS, true);
+    if (requestId !== predictionRequestId || race !== selectedRace) return;
+    const updatedData = buildRaceData(race);
+    if (!updatedData) return;
+    currentData = updatedData;
+    storePredictionSnapshot(updatedData);
+    renderRace(updatedData);
+  } catch (error) {
+    if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
+  }
+}
+
 function schedulePostPredictionFetches(data, requestId) {
-  refreshOfficialResult(data, requestId).finally(() => {
-    if (requestId === predictionRequestId) {
-      scheduleDailyPerformanceRefresh(requestId);
-    }
-  });
+  refreshProgramDetails(requestId, selectedRace);
+  if (isPremiumMode) {
+    scheduleDailyPerformanceRefresh(requestId);
+  } else {
+    refreshOfficialResult(data, requestId).finally(() => {
+      if (requestId === predictionRequestId) {
+        scheduleDailyPerformanceRefresh(requestId);
+      }
+    });
+  }
   setTimeout(() => {
     if (requestId !== predictionRequestId) return;
     refreshRaceSignals(data, requestId);
@@ -2987,6 +3255,25 @@ async function runPrediction(withLoading = true) {
     "公式出走表を未取得です";
   document.querySelector("#unavailableState p").textContent =
     "選手や成績を推測で表示せず、公式番組を取得できた開催だけ予測を表示します。";
+  const statuses = venueStatusByDate[dateInput.value] || {};
+  const statusValues = Object.values(statuses);
+  if (isFutureDate() && statusValues.length && !statusValues.some((status) => status.available)) {
+    const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
+    const hd = dateInput.value.replaceAll("-", "");
+    document.querySelector("#officialProgramLink").href =
+      `https://www.boatrace.jp/owpc/pc/race/index?jcd=${jcd}&hd=${hd}`;
+    document.querySelector("#unavailableState strong").textContent =
+      "まだ番組が確定していません";
+    document.querySelector("#unavailableState p").textContent =
+      "翌日の番組は通常、当日夜〜深夜に公開されます。公開後に出走表を取得してAI予測を表示します。";
+    currentData = null;
+    loadingState.hidden = true;
+    dashboard.hidden = true;
+    unavailableState.hidden = false;
+    predictButton.disabled = false;
+    updateRaceButtonStates();
+    return;
+  }
   const cachedPrediction = getCachedPredictionSnapshot();
   if (withLoading) {
     if (cachedPrediction) {
@@ -3118,7 +3405,7 @@ async function bootstrap() {
     runPrediction(true);
   }
   refreshWarmupStatus();
-  setInterval(refreshWarmupStatus, 60000);
+  setInterval(refreshWarmupStatus, 5 * 60 * 1000);
 }
 
 bootstrap();

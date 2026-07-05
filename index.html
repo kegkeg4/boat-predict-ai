@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260619-result-board-no-hit-rate">
+  <link rel="stylesheet" href="styles.css?v=20260703-result-cache">
 </head>
 <body>
   <div class="app-shell">
@@ -131,6 +131,13 @@
         <h2>レースデータを解析中</h2>
         <p id="loadingMessage">選手コンディションを確認しています...</p>
         <div class="loading-bar"><span></span></div>
+        <div class="skeleton-preview" aria-hidden="true">
+          <div class="skeleton-card"></div>
+          <div class="skeleton-card small"></div>
+          <div class="skeleton-table">
+            <span></span><span></span><span></span>
+          </div>
+        </div>
       </section>
 
       <section id="unavailableState" class="unavailable-state" hidden>
@@ -286,6 +293,7 @@
                   <th>展示</th>
                   <th>展示補正</th>
                   <th>水面補正</th>
+                  <th>号艇別1着率</th>
                   <th>公式印</th>
                   <th>AI評価</th>
                   <th>人気</th>
@@ -436,7 +444,7 @@
             </div>
             <span id="resultBoardStatus">読込中</span>
           </div>
-          <p class="result-board-note">当選時は払戻金額ではなく倍率だけを表示します。未確定レースは当選本数の集計から外します。</p>
+          <p class="result-board-note">当選時は払戻金額ではなく倍率だけを表示します。未確定レースは当選本数・的中率・回収率の集計から外します。</p>
           <div id="resultBoardSummary" class="result-board-summary"></div>
           <div id="resultBoardRaces" class="result-board-races"></div>
         </section>
@@ -451,30 +459,30 @@
             <article class="plan-card free">
               <span>FREE</span>
               <strong>無料</strong>
-              <p>基本予測・注目レース・上位3点まで</p>
+              <ul>
+                <li>✅ 基本予測</li>
+                <li>✅ 注目レース</li>
+                <li>✅ 上位3点</li>
+                <li>❌ 成績分析</li>
+                <li>❌ 展示後更新</li>
+              </ul>
             </article>
             <article class="plan-card premium">
               <span>PREMIUM</span>
               <strong>月額 980円</strong>
-              <p>本命5点・狙い目3点・穴3点・成績分析・展示後更新</p>
+              <ul>
+                <li>✅ 基本予測</li>
+                <li>✅ 注目レース</li>
+                <li>✅ 本命5点・狙い目3点・穴3点</li>
+                <li>✅ 成績分析</li>
+                <li>✅ 展示後更新</li>
+              </ul>
             </article>
           </div>
           <div class="plan-actions" role="group" aria-label="表示プラン切り替え">
             <button id="freePlanButton" class="plan-action active" type="button">無料表示</button>
             <button id="premiumPlanButton" class="plan-action" type="button">プレミアム表示デモ</button>
           </div>
-        </section>
-
-        <section id="korogashiGame" class="card korogashi-game">
-          <div class="card-heading">
-            <div>
-              <p class="eyebrow">PLAY MONEY GAME</p>
-              <h2>全会場コロガシ月間収支</h2>
-            </div>
-            <span id="korogashiGameBadge">解析中</span>
-          </div>
-          <p class="section-description">全会場の保存済み予測から候補を選び、毎日1,000円スタートで月間シミュレーションします。2連単3点へ残高を均等配分し、当たった払戻を次の候補へ全額コロガシ。外れた日は0円で終了し、翌日はまた1,000円から始めます。</p>
-          <div id="korogashiGameContent" class="korogashi-game-content"></div>
         </section>
 
         <footer>
@@ -485,6 +493,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260619-result-board-no-hit-rate"></script>
+  <script src="app.js?v=20260703-result-cache"></script>
 </body>
 </html>
