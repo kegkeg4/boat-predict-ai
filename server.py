@@ -37,6 +37,8 @@ PAST_RESULT_CACHE_SECONDS = int(os.environ.get("BOAT_PAST_RESULT_CACHE_SECONDS",
 FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_FETCH_TIMEOUT", "6"))
 PROGRAM_INDEX_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PROGRAM_INDEX_TIMEOUT", "11"))
 DETAIL_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_DETAIL_FETCH_TIMEOUT", "3"))
+PAY_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PAY_FETCH_TIMEOUT", "14"))
+BEFOREINFO_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_BEFOREINFO_FETCH_TIMEOUT", "12"))
 CACHE_FLUSH_INTERVAL_SECONDS = int(os.environ.get("BOAT_CACHE_FLUSH_INTERVAL", "30"))
 FETCH_MEMORY_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_FETCH_MEMORY_CACHE_MAX_ENTRIES", "300"))
 FETCH_LOCKS_MAX_ENTRIES = int(os.environ.get("BOAT_FETCH_LOCKS_MAX_ENTRIES", "100"))
@@ -62,8 +64,9 @@ TODAY_RECORD_INTERVAL_SECONDS = int(os.environ.get("BOAT_TODAY_RECORD_INTERVAL",
 WEATHER_FETCH_INTERVAL_SECONDS = int(os.environ.get("BOAT_WEATHER_FETCH_INTERVAL", "60"))
 WEATHER_FETCH_LEAD_MINUTES = int(os.environ.get("BOAT_WEATHER_FETCH_LEAD_MINUTES", "12"))
 WEATHER_FETCH_RETRY_SECONDS = int(os.environ.get("BOAT_WEATHER_FETCH_RETRY_SECONDS", "120"))
-WEATHER_FETCH_MAX_ATTEMPTS = int(os.environ.get("BOAT_WEATHER_FETCH_MAX_ATTEMPTS", "6"))
+WEATHER_FETCH_MAX_ATTEMPTS = int(os.environ.get("BOAT_WEATHER_FETCH_MAX_ATTEMPTS", "8"))
 WEATHER_FETCH_MAX_PER_TICK = int(os.environ.get("BOAT_WEATHER_FETCH_MAX_PER_TICK", "6"))
+WEATHER_FETCH_GRACE_SECONDS = int(os.environ.get("BOAT_WEATHER_FETCH_GRACE_SECONDS", "180"))
 RESULT_BOARD_CACHE_SECONDS = int(os.environ.get("BOAT_RESULT_BOARD_CACHE_SECONDS", "120"))
 KOROGASHI_MONTH_CACHE_SECONDS = int(os.environ.get("BOAT_KOROGASHI_MONTH_CACHE_SECONDS", "300"))
 SIGNALS_CACHE_SECONDS = int(os.environ.get("BOAT_SIGNALS_CACHE_SECONDS", "180"))
@@ -3317,6 +3320,39 @@ def get_stored_signals(date, jcd, race):
     return (cached or {}).get("payload")
 
 
+def fetch_live_beforeinfo(date, jcd, race, timeout=BEFOREINFO_FETCH_TIMEOUT_SECONDS):
+    compact_date = date.replace("-", "")
+    html_text = fetch_html(
+        f"/owpc/pc/race/beforeinfo?rno={int(race)}&jcd={jcd}&hd={compact_date}",
+        cache_seconds=0,
+        timeout=timeout,
+    )
+    return parse_beforeinfo(html_text)
+
+
+def merge_beforeinfo_into_signals(date, jcd, race, beforeinfo):
+    existing = get_stored_signals(date, jcd, race)
+    payload = dict(existing) if isinstance(existing, dict) else {
+        "date": date,
+        "jcd": jcd,
+        "race": int(race),
+        "expect": {"available": False},
+        "odds": {"available": False, "odds": {}, "firstPopularity": []},
+    }
+    payload["date"] = date
+    payload["jcd"] = jcd
+    payload["race"] = int(race)
+    payload["beforeinfo"] = beforeinfo or {"available": False, "racers": {}, "weather": {"available": False}}
+    payload.setdefault("expect", {"available": False})
+    payload.setdefault("odds", {"available": False, "odds": {}, "firstPopularity": []})
+    payload["available"] = any(
+        (payload.get(key) or {}).get("available")
+        for key in ("expect", "beforeinfo", "odds")
+    )
+    store_signals_payload(date, jcd, race, payload)
+    return payload
+
+
 def weather_fetch_key(date, jcd, race):
     return f"{date}-{jcd}-{race}"
 
@@ -3472,8 +3508,8 @@ def weather_fetch_once():
                 status = entry.get("status")
             if status == "success":
                 continue
-            if now > cutoff_dt:
-                update_weather_fetch_race(key, status="missed", message="締切時刻を過ぎたため終了")
+            if now > cutoff_dt + timedelta(seconds=WEATHER_FETCH_GRACE_SECONDS):
+                update_weather_fetch_race(key, status="missed", message="締切後の猶予時間を過ぎたため終了")
                 continue
             if attempts >= WEATHER_FETCH_MAX_ATTEMPTS:
                 update_weather_fetch_race(key, status="failed", message="最大リトライ回数に到達")
@@ -3491,13 +3527,19 @@ def weather_fetch_once():
                 lastAttemptAt=datetime.now(JST).isoformat(timespec="seconds"),
             )
             try:
-                signals = load_signals(date, jcd, int(race), timeout=min(FETCH_TIMEOUT_SECONDS, 6))
+                beforeinfo = fetch_live_beforeinfo(
+                    date,
+                    jcd,
+                    int(race),
+                    timeout=BEFOREINFO_FETCH_TIMEOUT_SECONDS,
+                )
+                signals = merge_beforeinfo_into_signals(date, jcd, int(race), beforeinfo)
                 if signals_weather_available(signals):
                     enrich_learning_weather_from_signals(date, jcd, int(race), signals)
                     update_weather_fetch_race(
                         key,
                         status="success",
-                        source="live",
+                        source="live-beforeinfo",
                         weather=((signals.get("beforeinfo") or {}).get("weather") or {}),
                         fetchedAt=datetime.now(JST).isoformat(timespec="seconds"),
                     )
@@ -3537,7 +3579,7 @@ def warm_completed_results_once(date=None):
     except Exception:
         return
     try:
-        load_pay_results(target_date, timeout=FETCH_TIMEOUT_SECONDS)
+        load_pay_results(target_date, timeout=PAY_FETCH_TIMEOUT_SECONDS)
     except Exception:
         pass
     active_jcds = [
@@ -3585,7 +3627,7 @@ def pay_warmer_worker():
         try:
             refresh_pay_results_now(
                 current_jst_date(),
-                timeout=min(FETCH_TIMEOUT_SECONDS, 8),
+                timeout=PAY_FETCH_TIMEOUT_SECONDS,
                 force=False,
                 reason="pay_warmer",
             )
@@ -3606,7 +3648,7 @@ def background_data_sync_once():
             venues_payload = {"venues": {}}
         if offset <= 0:
             try:
-                load_pay_results(target_date, timeout=FETCH_TIMEOUT_SECONDS)
+                load_pay_results(target_date, timeout=PAY_FETCH_TIMEOUT_SECONDS)
             except Exception:
                 pass
         if target_date != today:
@@ -4003,7 +4045,7 @@ def parse_pay_results(html_text, compact_date):
     return results
 
 
-def load_pay_results(date, timeout=FETCH_TIMEOUT_SECONDS, cache_seconds=None):
+def load_pay_results(date, timeout=PAY_FETCH_TIMEOUT_SECONDS, cache_seconds=None):
     compact_date = date.replace("-", "")
     if cache_seconds is None:
         cache_seconds = PAST_RESULT_CACHE_SECONDS if date < current_jst_date() else 20
@@ -4035,7 +4077,7 @@ def update_pay_refresh_status(date, **updates):
         status["updatedAt"] = datetime.now(JST).isoformat(timespec="seconds")
 
 
-def refresh_pay_results_now(date, timeout=FETCH_TIMEOUT_SECONDS, force=False, reason="manual"):
+def refresh_pay_results_now(date, timeout=PAY_FETCH_TIMEOUT_SECONDS, force=False, reason="manual"):
     update_pay_refresh_status(
         date,
         active=True,
@@ -4087,7 +4129,7 @@ def schedule_pay_refresh(date):
         try:
             refresh_pay_results_now(
                 date,
-                timeout=min(FETCH_TIMEOUT_SECONDS, 8),
+                timeout=PAY_FETCH_TIMEOUT_SECONDS,
                 force=False,
                 reason="background",
             )
@@ -4179,7 +4221,7 @@ def merge_pay_venue_status(date, venues_status):
     return merged
 
 
-def get_pay_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS, allow_live=True):
+def get_pay_result(date, jcd, race, timeout=PAY_FETCH_TIMEOUT_SECONDS, allow_live=True):
     cached = get_stored_result(date, jcd, race)
     if cached and cached.get("available"):
         return cached
@@ -4649,7 +4691,7 @@ def load_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS, include_weather=
         )
     ):
         return cached
-    pay_payload = get_pay_result(date, jcd, race, timeout=min(timeout, 12), allow_live=allow_live)
+    pay_payload = get_pay_result(date, jcd, race, timeout=PAY_FETCH_TIMEOUT_SECONDS, allow_live=allow_live)
     if pay_payload:
         needs_detail = include_weather and (
             not (pay_payload.get("weather") or {}).get("available")
@@ -4669,7 +4711,7 @@ def load_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS, include_weather=
         if date == current_jst_date():
             refresh_pay_results_now(
                 date,
-                timeout=min(timeout, 4),
+                timeout=PAY_FETCH_TIMEOUT_SECONDS,
                 force=False,
                 reason="inline-result",
             )
@@ -4718,13 +4760,13 @@ def load_results(date, jcd, races=None, max_workers=RESULT_FETCH_WORKERS, timeou
         if any(race not in cached_pay for race in target_races):
             refresh_pay_results_now(
                 date,
-                timeout=min(timeout, 4),
+                timeout=PAY_FETCH_TIMEOUT_SECONDS,
                 force=False,
                 reason="inline-results",
             )
     elif date > today:
         try:
-            pay_results = load_pay_results(date, timeout=min(timeout, 12)).get(jcd, {})
+            pay_results = load_pay_results(date, timeout=PAY_FETCH_TIMEOUT_SECONDS).get(jcd, {})
         except Exception:
             pay_results = {}
         for race in target_races:
@@ -4997,7 +5039,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                 return self.send_json({"error": "invalid parameters"}, 400)
             return self.send_json(refresh_pay_results_now(
                 date,
-                timeout=min(FETCH_TIMEOUT_SECONDS, 10),
+                timeout=PAY_FETCH_TIMEOUT_SECONDS,
                 force=force,
                 reason="admin",
             ))
