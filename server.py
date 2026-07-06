@@ -60,9 +60,9 @@ BACKGROUND_SYNC_INTERVAL_SECONDS = int(os.environ.get("BOAT_BACKGROUND_SYNC_INTE
 PAY_WARM_INTERVAL_SECONDS = int(os.environ.get("BOAT_PAY_WARM_INTERVAL", "45"))
 TODAY_RECORD_INTERVAL_SECONDS = int(os.environ.get("BOAT_TODAY_RECORD_INTERVAL", "900"))
 WEATHER_FETCH_INTERVAL_SECONDS = int(os.environ.get("BOAT_WEATHER_FETCH_INTERVAL", "60"))
-WEATHER_FETCH_LEAD_MINUTES = int(os.environ.get("BOAT_WEATHER_FETCH_LEAD_MINUTES", "25"))
-WEATHER_FETCH_RETRY_SECONDS = int(os.environ.get("BOAT_WEATHER_FETCH_RETRY_SECONDS", "300"))
-WEATHER_FETCH_MAX_ATTEMPTS = int(os.environ.get("BOAT_WEATHER_FETCH_MAX_ATTEMPTS", "3"))
+WEATHER_FETCH_LEAD_MINUTES = int(os.environ.get("BOAT_WEATHER_FETCH_LEAD_MINUTES", "12"))
+WEATHER_FETCH_RETRY_SECONDS = int(os.environ.get("BOAT_WEATHER_FETCH_RETRY_SECONDS", "120"))
+WEATHER_FETCH_MAX_ATTEMPTS = int(os.environ.get("BOAT_WEATHER_FETCH_MAX_ATTEMPTS", "6"))
 WEATHER_FETCH_MAX_PER_TICK = int(os.environ.get("BOAT_WEATHER_FETCH_MAX_PER_TICK", "6"))
 RESULT_BOARD_CACHE_SECONDS = int(os.environ.get("BOAT_RESULT_BOARD_CACHE_SECONDS", "120"))
 KOROGASHI_MONTH_CACHE_SECONDS = int(os.environ.get("BOAT_KOROGASHI_MONTH_CACHE_SECONDS", "300"))
@@ -146,6 +146,7 @@ korogashi_month_cache = {}
 admin_backfill_lock = threading.Lock()
 pay_refresh_lock = threading.Lock()
 pay_refreshing_dates = set()
+pay_refresh_status = {}
 result_enrich_lock = threading.Lock()
 result_enriching = set()
 worker_activity_lock = threading.Lock()
@@ -3582,7 +3583,12 @@ def pay_warmer_worker():
     while True:
         mark_worker_start("pay_warmer")
         try:
-            load_pay_results(current_jst_date(), timeout=min(FETCH_TIMEOUT_SECONDS, 8))
+            refresh_pay_results_now(
+                current_jst_date(),
+                timeout=min(FETCH_TIMEOUT_SECONDS, 8),
+                force=False,
+                reason="pay_warmer",
+            )
         except Exception:
             pass
         finally:
@@ -3997,9 +4003,10 @@ def parse_pay_results(html_text, compact_date):
     return results
 
 
-def load_pay_results(date, timeout=FETCH_TIMEOUT_SECONDS):
+def load_pay_results(date, timeout=FETCH_TIMEOUT_SECONDS, cache_seconds=None):
     compact_date = date.replace("-", "")
-    cache_seconds = PAST_RESULT_CACHE_SECONDS if date < current_jst_date() else 20
+    if cache_seconds is None:
+        cache_seconds = PAST_RESULT_CACHE_SECONDS if date < current_jst_date() else 20
     html_text = fetch_html(
         f"/owpc/pc/race/pay?hd={compact_date}",
         cache_seconds=cache_seconds,
@@ -4012,6 +4019,62 @@ def load_pay_results(date, timeout=FETCH_TIMEOUT_SECONDS):
     return parsed
 
 
+def summarize_pay_results(parsed):
+    if not isinstance(parsed, dict):
+        return {"venues": 0, "races": 0}
+    return {
+        "venues": len([jcd for jcd, race_map in parsed.items() if race_map]),
+        "races": sum(len(race_map or {}) for race_map in parsed.values()),
+    }
+
+
+def update_pay_refresh_status(date, **updates):
+    with pay_refresh_lock:
+        status = pay_refresh_status.setdefault(date, {"date": date})
+        status.update(updates)
+        status["updatedAt"] = datetime.now(JST).isoformat(timespec="seconds")
+
+
+def refresh_pay_results_now(date, timeout=FETCH_TIMEOUT_SECONDS, force=False, reason="manual"):
+    update_pay_refresh_status(
+        date,
+        active=True,
+        reason=reason,
+        force=force,
+        error=None,
+        startedAt=datetime.now(JST).isoformat(timespec="seconds"),
+    )
+    try:
+        parsed = load_pay_results(
+            date,
+            timeout=timeout,
+            cache_seconds=0 if force else None,
+        )
+        summary = summarize_pay_results(parsed)
+        update_pay_refresh_status(
+            date,
+            active=False,
+            finishedAt=datetime.now(JST).isoformat(timespec="seconds"),
+            **summary,
+        )
+        log_runtime_status(
+            f"pay_refresh:{date}:venues={summary['venues']}:races={summary['races']}",
+            force=True,
+        )
+        return {"date": date, "ok": True, **summary}
+    except Exception as error:
+        update_pay_refresh_status(
+            date,
+            active=False,
+            error=str(error),
+            finishedAt=datetime.now(JST).isoformat(timespec="seconds"),
+            venues=0,
+            races=0,
+        )
+        log_runtime_status(f"pay_refresh:{date}:error={error}", force=True)
+        return {"date": date, "ok": False, "error": str(error), "venues": 0, "races": 0}
+
+
 def schedule_pay_refresh(date):
     if date > current_jst_date():
         return
@@ -4022,14 +4085,26 @@ def schedule_pay_refresh(date):
 
     def worker():
         try:
-            load_pay_results(date, timeout=min(FETCH_TIMEOUT_SECONDS, 8))
-        except Exception:
-            pass
+            refresh_pay_results_now(
+                date,
+                timeout=min(FETCH_TIMEOUT_SECONDS, 8),
+                force=False,
+                reason="background",
+            )
         finally:
             with pay_refresh_lock:
                 pay_refreshing_dates.discard(date)
 
     threading.Thread(target=worker, daemon=True).start()
+
+
+def get_pay_refresh_status(date=None):
+    target_date = date or current_jst_date()
+    with pay_refresh_lock:
+        status = dict(pay_refresh_status.get(target_date) or {"date": target_date})
+        status["active"] = target_date in pay_refreshing_dates or bool(status.get("active"))
+    status["cached"] = summarize_pay_results(get_cached_pay_results(target_date))
+    return status
 
 
 def schedule_result_enrich(date, jcd, race, timeout=DETAIL_FETCH_TIMEOUT_SECONDS):
@@ -4591,6 +4666,21 @@ def load_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS, include_weather=
             schedule_result_enrich(date, jcd, race)
         return pay_payload
     if not allow_live:
+        if date == current_jst_date():
+            refresh_pay_results_now(
+                date,
+                timeout=min(timeout, 4),
+                force=False,
+                reason="inline-result",
+            )
+            refreshed = get_stored_result(date, jcd, race)
+            if refreshed and refreshed.get("available"):
+                if include_weather and (
+                    not (refreshed.get("weather") or {}).get("available")
+                    or not has_payout_type(refreshed, "2連単")
+                ):
+                    schedule_result_enrich(date, jcd, race)
+                return refreshed
         schedule_pay_refresh(date)
         return {
             "date": date,
@@ -4624,6 +4714,14 @@ def load_results(date, jcd, races=None, max_workers=RESULT_FETCH_WORKERS, timeou
     today = current_jst_date()
     if date == today:
         schedule_pay_refresh(date)
+        cached_pay = get_cached_pay_results(date).get(jcd, {})
+        if any(race not in cached_pay for race in target_races):
+            refresh_pay_results_now(
+                date,
+                timeout=min(timeout, 4),
+                force=False,
+                reason="inline-results",
+            )
     elif date > today:
         try:
             pay_results = load_pay_results(date, timeout=min(timeout, 12)).get(jcd, {})
@@ -4885,6 +4983,24 @@ class AppHandler(SimpleHTTPRequestHandler):
             return self.send_json(schedule_racer_profile_rebuild("admin"))
         if parsed.path == "/api/admin/weather-fetch-status":
             return self.send_json(get_weather_fetch_status())
+        if parsed.path == "/api/admin/pay-refresh-status":
+            query = parse_qs(parsed.query)
+            date = query.get("date", [current_jst_date()])[0]
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+                return self.send_json({"error": "invalid parameters"}, 400)
+            return self.send_json(get_pay_refresh_status(date))
+        if parsed.path == "/api/admin/pay-refresh":
+            query = parse_qs(parsed.query)
+            date = query.get("date", [current_jst_date()])[0]
+            force = query.get("force", ["1"])[0] != "0"
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+                return self.send_json({"error": "invalid parameters"}, 400)
+            return self.send_json(refresh_pay_results_now(
+                date,
+                timeout=min(FETCH_TIMEOUT_SECONDS, 10),
+                force=force,
+                reason="admin",
+            ))
         if parsed.path == "/api/admin/performance":
             query = parse_qs(parsed.query)
             date = query.get("date", [""])[0]
