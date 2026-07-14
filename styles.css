@@ -233,7 +233,8 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
   background: linear-gradient(135deg, #fff, #f3f9ff);
   box-shadow: var(--shadow);
 }
-.plan-copy h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
+/* SEO改修: H2統合後も既存見出しデザインを維持 */
+.plan-copy h2, .plan-copy h3 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
 .plan-copy p:last-child { margin: 7px 0 0; color: #65778a; font-size: 10px; line-height: 1.6; }
 .plan-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .plan-card { padding: 12px; border: 1px solid #e0e8f0; border-radius: 9px; background: #fff; }
@@ -304,7 +305,8 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
   from { background-position: 0% 50%; }
   to { background-position: 260% 50%; }
 }
-.race-summary h2 { display: inline; margin: 0 11px 0 0; font-size: 21px; }
+/* SEO改修: H2統合後も既存見出しデザインを維持 */
+.race-summary h2, .race-summary h3 { display: inline; margin: 0 11px 0 0; font-size: 21px; }
 .race-time { display: inline; color: #708196; font-size: 12px; font-weight: 600; }
 .race-title-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .race-type-badge { padding: 5px 9px; border-radius: 999px; font-size: 9px; font-weight: 800; }
@@ -347,12 +349,13 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
   background: linear-gradient(135deg, #fbfdff, #f5f9fd);
   box-shadow: var(--shadow);
 }
-.bet-decision-card h2 { margin: 0; font-size: 17px; }
-.bet-decision-card h2 span { display: inline-block; margin-left: 8px; padding: 5px 9px; border-radius: 999px; font-size: 10px; vertical-align: middle; }
-.bet-decision-card.kenjitsu h2 span { color: #0877f9; background: #e7f3ff; }
-.bet-decision-card.shobu h2 span { color: #9a6a00; background: #fff3d7; }
-.bet-decision-card.ana h2 span { color: #d14a5a; background: #fff0f2; }
-.bet-decision-card.miokuri h2 span { color: #65778a; background: #edf2f6; }
+/* SEO改修: H2統合後も既存見出しデザインを維持 */
+.bet-decision-card h2, .bet-decision-card h3 { margin: 0; font-size: 17px; }
+.bet-decision-card h2 span, .bet-decision-card h3 span { display: inline-block; margin-left: 8px; padding: 5px 9px; border-radius: 999px; font-size: 10px; vertical-align: middle; }
+.bet-decision-card.kenjitsu h2 span, .bet-decision-card.kenjitsu h3 span { color: #0877f9; background: #e7f3ff; }
+.bet-decision-card.shobu h2 span, .bet-decision-card.shobu h3 span { color: #9a6a00; background: #fff3d7; }
+.bet-decision-card.ana h2 span, .bet-decision-card.ana h3 span { color: #d14a5a; background: #fff0f2; }
+.bet-decision-card.miokuri h2 span, .bet-decision-card.miokuri h3 span { color: #65778a; background: #edf2f6; }
 .bet-decision-body strong { display: block; margin-bottom: 6px; font-size: 15px; }
 .bet-decision-body p { margin: 0; color: #66788a; font-size: 10px; line-height: 1.6; }
 .bet-decision-tickets { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
@@ -364,7 +367,8 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 
 .official-card { margin-bottom: 18px; padding: 21px 24px; border-color: #cbd9e6; background: linear-gradient(135deg, #f7fbff, #fff 58%); }
 .official-source { display: flex; align-items: center; justify-content: space-between; }
-.official-source h2 { margin: 0; font-size: 16px; }
+/* SEO改修: H2統合後も既存見出しデザインを維持 */
+.official-source h2, .official-source h3 { margin: 0; font-size: 16px; }
 .official-link { padding: 7px 10px; border: 1px solid #cbddeb; border-radius: 6px; color: #2674b7; background: #fff; font-size: 9px; font-weight: 700; text-decoration: none; }
 .official-content { display: grid; grid-template-columns: 1.2fr .8fr .8fr 1.8fr; gap: 18px; align-items: center; margin-top: 17px; }
 .official-content small { display: block; margin-bottom: 7px; color: #8a9aaa; font-size: 9px; }
@@ -421,7 +425,8 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .main-prediction { padding: 23px 24px; }
 .ticket-card, .insight-card { padding: 20px 21px; }
 .card-heading { display: flex; align-items: center; justify-content: space-between; }
-.card-heading h2 { margin: 0; font-size: 16px; }
+/* SEO改修: H2統合後も既存見出しデザインを維持 */
+.card-heading h2, .card-heading h3 { margin: 0; font-size: 16px; }
 .confidence-badge { padding: 7px 10px; border-radius: 6px; color: #0877f9; background: #eaf4ff; font-size: 10px; font-weight: 700; }
 
 .prediction-rows { display: grid; gap: 9px; margin-top: 19px; }
@@ -569,7 +574,8 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .performance-card { margin-top: 18px; padding: 22px 24px; min-height: 300px; }
 .daily-performance { margin-top: 14px; padding: 15px; border: 1px solid #dfe8f1; border-radius: 10px; background: linear-gradient(145deg, #fbfdff, #f6faff); }
 .daily-performance-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-.daily-performance h3, .performance-card h2 { margin: 0; font-size: 15px; letter-spacing: -.02em; }
+/* SEO改修: H2統合後も既存見出しデザインを維持 */
+.daily-performance h3, .performance-card h2, .performance-card h3 { margin: 0; font-size: 15px; letter-spacing: -.02em; }
 .daily-performance-head > span { padding: 5px 8px; border-radius: 5px; color: #0877f9; background: #eaf4ff; font-size: 9px; font-weight: 700; white-space: nowrap; }
 .daily-performance-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
 .daily-stat { padding: 11px; border: 1px solid #e4ebf2; border-radius: 8px; background: #fff; }
@@ -750,7 +756,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .radar::after { width: 100%; height: 1px; top: 50%; left: 0; }
 .radar span { position: absolute; inset: 9px; border: 1px solid #c9e3ff; border-radius: 50%; }
 .radar i { position: absolute; inset: 50% 50% 0 0; transform-origin: bottom right; background: linear-gradient(45deg, transparent 45%, rgba(8,119,249,.45)); animation: scan 1s linear infinite; }
-.loading-state h2 { margin: 0 0 7px; font-size: 17px; }
+/* SEO改修: H2統合後も既存見出しデザインを維持 */
+.loading-state h2, .loading-state h3 { margin: 0 0 7px; font-size: 17px; }
 .loading-state p { color: #8191a2; font-size: 11px; }
 .loading-bar { width: 240px; height: 4px; margin: 18px auto 0; border-radius: 4px; background: #dfe8f0; overflow: hidden; }
 .loading-bar span { display: block; width: 35%; height: 100%; background: #0877f9; animation: loading 1.2s ease-in-out infinite; }
