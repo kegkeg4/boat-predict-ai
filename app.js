@@ -3213,7 +3213,7 @@ function setBatchMessage(message) {
   unavailableState.hidden = true;
   dashboard.hidden = true;
   predictButton.disabled = true;
-  const title = loadingState.querySelector("h2");
+  const title = loadingState.querySelector("h2, h3");
   if (title) title.textContent = "全会場の収支を一括集計中";
   document.querySelector("#loadingMessage").textContent = message;
 }

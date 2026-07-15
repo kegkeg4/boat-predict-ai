@@ -221,6 +221,40 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 }
 .demo-notice b { padding: 3px 7px; border-radius: 4px; color: #0877f9; background: #e5f2ff; font-size: 9px; letter-spacing: .1em; }
 
+/* CRO改修: ファーストビュー・実績下・問い合わせへのCTA導線を追加 */
+.cta-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  margin: 12px 0 0;
+}
+.cta-primary,
+.cta-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 9px 13px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 900;
+  text-decoration: none;
+  transition: .2s ease;
+}
+.cta-primary {
+  color: #fff;
+  background: #0877f9;
+  box-shadow: 0 7px 18px rgba(8,119,249,.24);
+}
+.cta-primary:hover { transform: translateY(-1px); box-shadow: 0 10px 22px rgba(8,119,249,.3); }
+.cta-secondary {
+  border: 1px solid #cfe0ee;
+  color: #0877f9;
+  background: #fff;
+}
+.cta-secondary:hover { background: #f4f9ff; }
+
 .plan-panel {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr) auto;
@@ -699,6 +733,53 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
   text-shadow: 0 1px 3px rgba(0,0,0,.22);
   animation: rainbow-flow 5s linear infinite;
 }
+
+/* CRO改修: 事例確認後の次アクションをカード化 */
+.cta-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 16px;
+  padding: 18px 20px;
+  background: linear-gradient(135deg, #fff, #f2f8ff);
+}
+.cta-card h3 { margin: 0; font-size: 16px; }
+.cta-card p:not(.eyebrow) { margin: 7px 0 0; color: #65778a; font-size: 10px; line-height: 1.7; }
+
+/* CRO/AI引用改修: 運営者・対応エリア・問い合わせ情報を明示 */
+.contact-card { margin-top: 16px; padding: 20px; }
+.contact-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.contact-grid > div {
+  padding: 13px;
+  border: 1px solid #e0e8f0;
+  border-radius: 10px;
+  background: #fbfdff;
+}
+.contact-grid small {
+  display: block;
+  color: #8292a4;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: .12em;
+}
+.contact-grid strong {
+  display: block;
+  margin-top: 5px;
+  color: #13243a;
+  font-size: 14px;
+}
+.contact-grid p {
+  margin: 7px 0 0;
+  color: #68788a;
+  font-size: 10px;
+  line-height: 1.65;
+}
 .korogashi-game { margin-top: 18px; padding: 22px 24px; background: linear-gradient(135deg, #fff, #f7fbff 58%, #fff8ed); }
 .korogashi-game .card-heading > span { padding: 7px 10px; border-radius: 999px; color: #0877f9; background: #eaf4ff; font-size: 10px; font-weight: 900; white-space: nowrap; }
 .korogashi-game .card-heading > span.buy { color: #0a9a70; background: #e6f8f1; }
@@ -861,6 +942,8 @@ footer { display: flex; justify-content: space-between; padding: 22px 3px 0; col
   .performance-race-list { grid-template-columns: 1fr; }
   .strategy-profit-grid { grid-template-columns: 1fr; }
   .result-board-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cta-card { align-items: flex-start; flex-direction: column; }
+  .contact-grid { grid-template-columns: 1fr; }
   .korogashi-main { grid-template-columns: 1fr; }
   .korogashi-game-stats { grid-template-columns: 1fr 1fr; }
 }

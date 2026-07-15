@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="AIがボートレース全24場のレースデータを自動集計。出走表・予測・公式結果・的中率をリアルタイムで確認できる無料サービス。登録不要。">
-  <!-- SEO改修: メタディスクリプション最適化 -->
+  <meta name="description" content="全国24場対応のボートレース予測AI。競艇の出走表・公式結果・的中率を自動集計し、無料・登録不要で確認できます。まずは本日の開催場を選択。">
+  <!-- CRO/SEO改修: 強み・対応エリア・行動喚起を含めてmeta descriptionを更新 -->
   <meta name="keywords" content="競艇,ボートレース,競艇予測,ボートレース予想,競艇AI,競艇予測屋,競艇予想AI,3連単予想">
   <meta name="robots" content="index,follow">
   <link rel="canonical" href="https://boat-predict-ai.onrender.com/">
@@ -40,11 +40,61 @@
     }
   }
   </script>
+  <!-- CRO/SEO改修: 運営実体・対応エリア・問い合わせ導線を機械可読化 -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Organization",
+        "@id": "https://boat-predict-ai.onrender.com/#organization",
+        "name": "BOAT PREDICT AI",
+        "url": "https://boat-predict-ai.onrender.com/",
+        "areaServed": {
+          "@type": "Country",
+          "name": "日本"
+        },
+        "contactPoint": {
+          "@type": "ContactPoint",
+          "contactType": "customer support",
+          "url": "https://github.com/kegkeg4/boat-predict-ai/issues",
+          "availableLanguage": ["ja"]
+        }
+      },
+      {
+        "@type": "Service",
+        "@id": "https://boat-predict-ai.onrender.com/#service",
+        "name": "競艇・ボートレース予測AI",
+        "serviceType": "ボートレース予測データの自動集計・表示",
+        "provider": {
+          "@id": "https://boat-predict-ai.onrender.com/#organization"
+        },
+        "areaServed": "全国24か所のボートレース場",
+        "description": "公式データをもとに、出走表・予測候補・公式結果・的中率・回収率を参考情報として自動集計します。"
+      },
+      {
+        "@type": "Product",
+        "@id": "https://boat-predict-ai.onrender.com/#product",
+        "name": "BOAT PREDICT AI 無料版",
+        "description": "登録不要で利用できる競艇・ボートレース予測の参考情報ツールです。",
+        "brand": {
+          "@id": "https://boat-predict-ai.onrender.com/#organization"
+        },
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "JPY",
+          "availability": "https://schema.org/InStock"
+        }
+      }
+    ]
+  }
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260630-seo">
-  <!-- SEO改修: ?v= バージョン文字列更新 -->
+  <link rel="stylesheet" href="styles.css?v=20260715-cro-seo">
+  <!-- CRO/SEO改修: ?v= バージョン文字列更新 -->
 </head>
 <body>
   <div class="app-shell">
@@ -75,6 +125,11 @@
         <a class="nav-item" href="#plans">
           <span class="nav-icon">¥</span>
           料金プラン
+        </a>
+        <!-- CRO改修: 問い合わせ導線をサイドナビに追加 -->
+        <a class="nav-item" href="#contact">
+          <span class="nav-icon">✉</span>
+          問い合わせ
         </a>
       </nav>
 
@@ -132,6 +187,13 @@
       <div class="demo-notice">
         <b>番組確定済み</b>
         競艇・ボートレースの公式番組をもとに、当日全レース終了後は番組が確定した翌日分を前夜予測。展示公開後は直前データを加えて自動更新します。
+      </div>
+
+      <!-- CRO改修: ファーストビュー直下に主要CTAを追加 -->
+      <div class="cta-strip" aria-label="主要アクション">
+        <a class="cta-primary" href="#predictButton">本日の競艇予測を確認する</a>
+        <a class="cta-secondary" href="#resultBoard">予測結果の集計を見る</a>
+        <a class="cta-secondary" href="#contact">問い合わせる</a>
       </div>
 
       <!-- SEO改修: コンテンツ追加ブロック1 - サービス概要説明 -->
@@ -529,6 +591,16 @@
           <div id="resultBoardRaces" class="result-board-races"></div>
         </section>
 
+        <!-- CRO改修: 事例・実績確認後のCTAを追加 -->
+        <section class="card cta-card">
+          <div>
+            <p class="eyebrow">NEXT ACTION</p>
+            <h3>気になる会場の予測と結果を続けて確認できます</h3>
+            <p>平和島・江戸川・戸田など、荒れやすい会場も含めて全国24場の予測候補と公式結果を参考情報として確認できます。</p>
+          </div>
+          <a class="cta-primary" href="#predictButton">会場を選んで予測を見る</a>
+        </section>
+
         <section id="plans" class="plan-panel">
           <div class="plan-copy">
             <p class="eyebrow">FREE / PREMIUM</p>
@@ -563,6 +635,34 @@
           <div class="plan-actions" role="group" aria-label="表示プラン切り替え">
             <button id="freePlanButton" class="plan-action active" type="button">無料表示</button>
             <button id="premiumPlanButton" class="plan-action" type="button">プレミアム表示デモ</button>
+          </div>
+        </section>
+
+        <!-- CRO/AI引用改修: 所在地・対応エリア・問い合わせ先を明示 -->
+        <section id="contact" class="card contact-card">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">CONTACT / AREA</p>
+              <h3>運営者情報・お問い合わせ</h3>
+            </div>
+            <a class="cta-primary" href="https://github.com/kegkeg4/boat-predict-ai/issues" target="_blank" rel="noreferrer">問い合わせフォームを開く</a>
+          </div>
+          <div class="contact-grid">
+            <div>
+              <small>サイト名</small>
+              <strong>BOAT PREDICT AI</strong>
+              <p>競艇・ボートレースの公式データをもとに、予測候補と結果検証を自動集計するオンラインサービスです。</p>
+            </div>
+            <div>
+              <small>所在地・対応エリア</small>
+              <strong>日本 / 全国24場対応</strong>
+              <p>桐生・戸田・江戸川・平和島・大村など、全国のボートレース場を対象にしています。</p>
+            </div>
+            <div>
+              <small>問い合わせ方法</small>
+              <strong>Webフォーム</strong>
+              <p>不具合報告・改善要望は問い合わせフォームから送信できます。電話受付は現在行っていません。</p>
+            </div>
           </div>
         </section>
 
@@ -621,8 +721,8 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260630-seo"></script>
-  <!-- SEO改修: ?v= バージョン文字列更新 -->
+  <script src="app.js?v=20260715-cro-seo"></script>
+  <!-- CRO/SEO改修: ?v= バージョン文字列更新 -->
   <!-- SEO改修: FAQPage構造化データ追加 - リッチリザルト獲得のため -->
   <script type="application/ld+json">
   {
