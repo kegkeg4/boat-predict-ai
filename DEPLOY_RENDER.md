@@ -31,11 +31,21 @@ Render Dashboardの Environment で以下を設定します。
 
 | Key | Value |
 | --- | --- |
-| `PYTHON_VERSION` | `3.11.9` |
-| `BOAT_STARTUP_WARMUP` | `1` |
-| `BOAT_AUTO_BACKFILL` | `1` |
+| `PYTHON_VERSION` | `3.11.13` |
+| `BOAT_STARTUP_WARMUP` | `0` |
+| `BOAT_AUTO_BACKFILL` | `0` |
+| `BOAT_RESULT_WARMER` | `0` |
+| `BOAT_PAY_WARMER` | `1` |
+| `BOAT_PAY_WARM_INTERVAL` | `90` |
+| `BOAT_FETCH_TIMEOUT` | `6` |
+| `BOAT_PROGRAM_INDEX_TIMEOUT` | `7` |
+| `BOAT_ADMIN_BACKFILL_WORKERS` | `1` |
+| `BOAT_RESULT_FETCH_WORKERS` | `1` |
+| `BOAT_VENUE_FALLBACK_WORKERS` | `2` |
+| `BOAT_MAX_HTTP_THREADS` | `32` |
 | `BOAT_DATA_DIR` | `/var/data/boat-predict` |
 | `ADMIN_PASSWORD` | 管理画面用の任意のパスワード |
+| `BOAT_PUBLIC_ORIGIN` | 本番の公開URL（例 `https://www.example.jp`） |
 
 管理画面は `/admin` から開けます。ログインユーザー名は `admin`、パスワードは `ADMIN_PASSWORD` に設定した値です。
 
@@ -59,6 +69,12 @@ Renderの Disks で以下を設定します。
 - `server.py`
 - `admin.html`
 - `admin.js`
+- `guide.html`
+- `operator.html`
+- `terms.html`
+- `privacy.html`
+- `disclaimer.html`
+- `commerce.html`
 - `requirements.txt`
 - `render.yaml`
 - `DEPLOY_RENDER.md`
@@ -87,6 +103,15 @@ DNS側では、Renderに表示される接続先へ以下のように設定し�
 - ルートドメインを使う場合: DNSサービス側が対応していれば ALIAS / ANAME を使う
 
 SSLはRender側で自動発行されます。DNS反映には数分から数時間かかることがあります。
+
+接続確認後、Environment の `BOAT_PUBLIC_ORIGIN` を独自ドメインへ変更して再デプロイします。canonical、OG URL、sitemap.xml、robots.txtはこの値を本番URLとして出力します。`https://` を含め、末尾の `/` は付けません。
+
+検索エンジンへ送信する前に、次を確認します。
+
+1. `https://独自ドメイン/guide.html` が200で開く
+2. `https://独自ドメイン/sitemap.xml` 内が独自ドメインになっている
+3. Google Search Consoleへ独自ドメインを登録し、sitemap.xmlを送信する
+4. Renderサブドメイン側のcanonicalも独自ドメインを示している
 
 ## 月額費用の目安
 

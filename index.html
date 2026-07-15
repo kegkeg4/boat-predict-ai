@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="全国24場対応のボートレース予測AI。競艇の出走表・公式結果・的中率を自動集計し、無料・登録不要で確認できます。まずは本日の開催場を選択。">
+  <meta name="description" content="全国24場対応のボートレース予測AI。競艇の出走表・公式結果・当選本数・回収率を自動集計し、無料・登録不要で確認できます。まずは本日の開催場を選択。">
   <!-- CRO/SEO改修: 強み・対応エリア・行動喚起を含めてmeta descriptionを更新 -->
   <meta name="keywords" content="競艇,ボートレース,競艇予測,ボートレース予想,競艇AI,競艇予測屋,競艇予想AI,3連単予想">
   <meta name="robots" content="index,follow">
@@ -16,14 +16,24 @@
   <meta name="twitter:card" content="summary">
   <title>ボートレース予測AI｜全レース自動集計・無料で予測と結果を確認</title>
   <!-- SEO改修: タイトルタグ最適化 - ターゲットKW「ボートレース予測」を文頭に配置 -->
-  <!-- Google tag (gtag.js) -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-NF2DHHM9C3"></script>
+  <!-- Google Analytics: 同意前は保存しない -->
   <script>
     window.dataLayer = window.dataLayer || [];
     function gtag(){dataLayer.push(arguments);}
+    let initialAnalyticsConsent = 'denied';
+    try {
+      initialAnalyticsConsent = localStorage.getItem('boat-predict-analytics-consent') === 'granted' ? 'granted' : 'denied';
+    } catch {}
+    gtag('consent', 'default', {
+      analytics_storage: initialAnalyticsConsent,
+      ad_storage: 'denied',
+      ad_user_data: 'denied',
+      ad_personalization: 'denied'
+    });
     gtag('js', new Date());
     gtag('config', 'G-NF2DHHM9C3');
   </script>
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-NF2DHHM9C3"></script>
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -70,7 +80,7 @@
           "@id": "https://boat-predict-ai.onrender.com/#organization"
         },
         "areaServed": "全国24か所のボートレース場",
-        "description": "公式データをもとに、出走表・予測候補・公式結果・的中率・回収率を参考情報として自動集計します。"
+        "description": "公式データをもとに、出走表・予測候補・公式結果・当選本数・回収率を参考情報として自動集計します。"
       },
       {
         "@type": "Product",
@@ -92,8 +102,8 @@
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260715-guide-page">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&amp;family=Noto+Sans+JP:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=20260715-production-hardening">
   <!-- CRO/SEO改修: ?v= バージョン文字列更新 -->
 </head>
 <body>
@@ -199,16 +209,6 @@
         <a class="cta-secondary" href="#resultBoard">予測結果の集計を見る</a>
         <a class="cta-secondary" href="guide.html">予測の仕組みを見る</a>
       </div>
-
-      <!-- CRO/SEO改修: 長い説明はguide.htmlへ移し、トップは予測操作を優先 -->
-      <section class="card guide-teaser">
-        <div>
-          <p class="eyebrow">FIRST TIME GUIDE</p>
-          <h2>AI予測の仕組み・使い方は別ページで確認できます</h2>
-          <p>トップは予測操作を優先し、サービス説明・競艇場ごとの特徴・結果集計の見方はガイドページにまとめました。</p>
-        </div>
-        <a class="cta-secondary" href="guide.html">ガイドを見る</a>
-      </section>
 
       <section id="loadingState" class="loading-state" hidden>
         <div class="radar">
@@ -467,7 +467,7 @@
             </div>
             <div class="official-stat">
               <small>総合予測への配分</small>
-              <strong>25%</strong>
+              <strong>35%</strong>
               <span>独立シグナルとして加点</span>
             </div>
             <p id="officialSummary" class="official-summary"></p>
@@ -500,7 +500,7 @@
               <span>レース</span>
             </div>
             <div class="daily-stat hit">
-              <small>7点内的中</small>
+              <small>11点内的中</small>
               <strong id="dailyExactHits">0</strong>
               <span id="dailyExactRate">0%</span>
             </div>
@@ -544,7 +544,7 @@
             </div>
             <span id="resultBoardStatus">読込中</span>
           </div>
-          <p class="result-board-note">当選時は払戻金額ではなく倍率だけを表示します。未確定レースは当選本数・的中率・回収率の集計から外します。</p>
+          <p class="result-board-note">当選時は払戻金額ではなく倍率だけを表示します。未確定レースは当選本数・回収率の集計から外します。</p>
           <div id="resultBoardSummary" class="result-board-summary"></div>
           <div id="resultBoardRaces" class="result-board-races"></div>
         </section>
@@ -559,12 +559,22 @@
           <a class="cta-primary" href="#predictButton">会場を選んで予測を見る</a>
         </section>
 
+        <!-- 長い説明はguide.htmlへ分離し、トップでは予測結果を先に表示する -->
+        <section class="card guide-teaser">
+          <div>
+            <p class="eyebrow">FIRST TIME GUIDE</p>
+            <h2>AI予測の仕組み・使い方</h2>
+            <p>サービス説明・競艇場ごとの特徴・結果集計の見方は、専用ガイドにまとめています。</p>
+          </div>
+          <a class="cta-secondary" href="guide.html">ガイドを見る</a>
+        </section>
+
         <section id="plans" class="plan-panel">
           <div class="plan-copy">
             <p class="eyebrow">FREE / PREMIUM</p>
             <!-- SEO改修: H2統合 - 既存カード見出しをH3へ変更 -->
-            <h3>無料で試して、深い分析はプレミアムへ</h3>
-            <p>予測画面を優先し、料金案内は確認したい時だけ見られる位置に移しました。</p>
+            <h3>ベータ版を無料公開中</h3>
+            <p>現在は登録・決済なしで利用できます。プレミアム欄は開発中機能の表示デモです。</p>
           </div>
           <div class="plan-cards">
             <article class="plan-card free">
@@ -579,8 +589,8 @@
               </ul>
             </article>
             <article class="plan-card premium">
-              <span>PREMIUM</span>
-              <strong>月額 980円</strong>
+              <span>PREMIUM / 開発中</span>
+              <strong>提供準備中</strong>
               <ul>
                 <li>✅ 基本予測</li>
                 <li>✅ 注目レース</li>
@@ -630,7 +640,7 @@
           <!-- SEO改修: H2新規追加 - FAQPage構造化データと連動 -->
           <dl>
             <dt>このサービスは無料ですか？</dt>
-            <dd>はい、全機能を無料でご利用いただけます。登録・ログインも不要です。</dd>
+            <dd>現在のベータ版は登録・ログイン不要で無料です。プレミアム欄は表示デモで、現時点では有料契約や決済を受け付けていません。</dd>
 
             <dt>AIはどのように予測しているのですか？</dt>
             <dd>
@@ -639,10 +649,10 @@
               AIが買い目候補を自動生成しています。予測は参考情報であり、的中を保証するものではありません。
             </dd>
 
-            <dt>予測の的中率はどのくらいですか？</dt>
+            <dt>予測結果はどのように確認できますか？</dt>
             <dd>
-              的中率・回収率の実績はサービス内の結果ボードで随時公開しています。
-              現在検証中のサービスであり、特定の的中率を保証するものではありません。
+              当選本数・回収率・各レースの当否は、サービス内の結果ボードで随時公開しています。
+              現在検証中のサービスであり、的中や利益を保証するものではありません。
             </dd>
 
             <dt>全国の競艇場に対応していますか？</dt>
@@ -672,14 +682,47 @@
         </section>
 
         <footer>
-          <p>予測は的中を保証するものではありません。投票はご自身の判断と責任で行ってください。</p>
-          <p>BOAT PREDICT AI / PROTOTYPE</p>
+          <div>
+            <p>予測は的中を保証するものではありません。投票はご自身の判断と責任で行ってください。</p>
+            <nav class="legal-links" aria-label="法務・運営情報">
+              <a href="operator.html">運営者情報</a>
+              <a href="terms.html">利用規約</a>
+              <a href="privacy.html">プライバシー</a>
+              <a href="disclaimer.html">免責事項</a>
+              <a href="commerce.html">特商法表記</a>
+            </nav>
+          </div>
+          <p>BOAT PREDICT AI / BETA</p>
         </footer>
       </div>
     </main>
   </div>
 
-  <script src="app.js?v=20260715-guide-page"></script>
+  <div id="analyticsConsent" class="analytics-consent" hidden>
+    <p>品質改善のため匿名のアクセス解析を利用します。詳しくは<a href="privacy.html">プライバシーポリシー</a>をご確認ください。</p>
+    <div>
+      <button type="button" data-analytics-consent="denied">利用しない</button>
+      <button type="button" class="accept" data-analytics-consent="granted">同意する</button>
+    </div>
+  </div>
+  <script>
+    (() => {
+      const key = 'boat-predict-analytics-consent';
+      const banner = document.getElementById('analyticsConsent');
+      let savedConsent = null;
+      try { savedConsent = localStorage.getItem(key); } catch {}
+      if (!savedConsent) banner.hidden = false;
+      banner.querySelectorAll('[data-analytics-consent]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const consent = button.dataset.analyticsConsent;
+          try { localStorage.setItem(key, consent); } catch {}
+          gtag('consent', 'update', { analytics_storage: consent });
+          banner.hidden = true;
+        });
+      });
+    })();
+  </script>
+  <script src="app.js?v=20260715-production-hardening"></script>
   <!-- CRO/SEO改修: ?v= バージョン文字列更新 -->
   <!-- SEO改修: FAQPage構造化データ追加 - リッチリザルト獲得のため -->
   <script type="application/ld+json">
@@ -692,7 +735,7 @@
         "name": "このサービスは無料ですか？",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "はい、全機能を無料でご利用いただけます。登録・ログインも不要です。"
+          "text": "現在のベータ版は登録・ログイン不要で無料です。プレミアム欄は表示デモで、現時点では有料契約や決済を受け付けていません。"
         }
       },
       {
@@ -705,10 +748,10 @@
       },
       {
         "@type": "Question",
-        "name": "予測の的中率はどのくらいですか？",
+        "name": "予測結果はどのように確認できますか？",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "的中率・回収率の実績はサービス内の結果ボードで随時公開しています。現在検証中のサービスであり、特定の的中率を保証するものではありません。"
+          "text": "当選本数・回収率・各レースの当否はサービス内の結果ボードで随時公開しています。現在検証中のサービスであり、的中や利益を保証するものではありません。"
         }
       },
       {

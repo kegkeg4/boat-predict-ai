@@ -11,17 +11,27 @@ services:
     maxShutdownDelaySeconds: 60
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.9
+        value: 3.11.13
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: BOAT_PUBLIC_ORIGIN
+        sync: false
       - key: BOAT_STARTUP_WARMUP
-        value: "1"
+        value: "0"
       - key: BOAT_AUTO_BACKFILL
-        value: "1"
+        value: "0"
+      - key: BOAT_RESUME_BACKFILL
+        value: "0"
+      - key: BOAT_RACER_PROFILE
+        value: "0"
       - key: BOAT_RESULT_WARMER
-        value: "1"
+        value: "0"
       - key: BOAT_PAY_WARMER
         value: "1"
       - key: BOAT_PAY_WARM_INTERVAL
-        value: "45"
+        value: "90"
+      - key: BOAT_WEATHER_FETCHER
+        value: "1"
       - key: BOAT_BACKGROUND_SYNC_INTERVAL
         value: "900"
       - key: BOAT_SIGNALS_CACHE_SECONDS
@@ -29,9 +39,9 @@ services:
       - key: BOAT_PROGRAM_UNAVAILABLE_CACHE_SECONDS
         value: "5"
       - key: BOAT_FETCH_TIMEOUT
-        value: "8"
+        value: "6"
       - key: BOAT_PROGRAM_INDEX_TIMEOUT
-        value: "14"
+        value: "7"
       - key: BOAT_DETAIL_FETCH_TIMEOUT
         value: "3"
       - key: BOAT_CACHE_FLUSH_INTERVAL
@@ -39,7 +49,27 @@ services:
       - key: BOAT_PAST_RESULT_CACHE_SECONDS
         value: "2592000"
       - key: BOAT_ADMIN_BACKFILL_WORKERS
-        value: "4"
+        value: "1"
+      - key: BOAT_RESULT_FETCH_WORKERS
+        value: "1"
+      - key: BOAT_VENUE_FALLBACK_WORKERS
+        value: "2"
+      - key: BOAT_FETCH_MEMORY_CACHE_MAX_ENTRIES
+        value: "150"
+      - key: BOAT_PROGRAM_CACHE_MAX_ENTRIES
+        value: "300"
+      - key: BOAT_RESULTS_CACHE_MAX_ENTRIES
+        value: "500"
+      - key: BOAT_SIGNALS_CACHE_MAX_ENTRIES
+        value: "1000"
+      - key: BOAT_FETCH_LOCKS_MAX_ENTRIES
+        value: "100"
+      - key: BOAT_MAX_HTTP_THREADS
+        value: "32"
+      - key: BOAT_MAX_REQUEST_BODY_BYTES
+        value: "262144"
+      - key: BOAT_MAX_LEARNING_EVENTS
+        value: "24"
       - key: BOAT_ADMIN_RESULT_TIMEOUT
         value: "16"
       - key: BOAT_ADMIN_SIGNAL_TIMEOUT

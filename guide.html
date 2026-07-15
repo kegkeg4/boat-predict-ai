@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="BOAT PREDICT AIの使い方、競艇AI予測の仕組み、全国24場の競艇場ごとの特徴、的中率・回収率の見方をまとめたガイドページです。">
+  <meta name="description" content="BOAT PREDICT AIの使い方、競艇AI予測の仕組み、全国24場の競艇場ごとの特徴、当選本数・回収率の見方をまとめたガイドページです。">
   <meta name="robots" content="index,follow">
   <link rel="canonical" href="https://boat-predict-ai.onrender.com/guide.html">
   <meta property="og:type" content="article">
@@ -12,14 +12,6 @@
   <meta property="og:description" content="競艇・ボートレース予測AIの使い方、予測ロジック、結果ボードの見方、全国24場の特徴をわかりやすく解説します。">
   <meta property="og:site_name" content="BOAT PREDICT AI">
   <title>競艇AI予測の使い方と仕組み｜BOAT PREDICT AIガイド</title>
-  <!-- Google tag (gtag.js) -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-NF2DHHM9C3"></script>
-  <script>
-    window.dataLayer = window.dataLayer || [];
-    function gtag(){dataLayer.push(arguments);}
-    gtag('js', new Date());
-    gtag('config', 'G-NF2DHHM9C3');
-  </script>
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -39,8 +31,8 @@
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260715-guide-page">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&amp;family=Noto+Sans+JP:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=20260715-production-hardening">
 </head>
 <body>
   <main class="guide-page">
@@ -63,7 +55,7 @@
       <h2>このサービスでできること</h2>
       <p>
         全国24か所の競艇場で行われるレースの出走表・オッズ・公式結果を自動で取得し、
-        AIが整理・表示します。予測は参考情報として提供しており、的中率・回収率の実績データを自動集計して公開しています。
+        AIが整理・表示します。予測は参考情報として提供しており、当選本数・回収率の実績データを自動集計して公開しています。
       </p>
       <p>
         「どの予測が当たって、どれが外れたか」を透明に確認できることが、このサービスの特徴です。
@@ -125,7 +117,7 @@
     <section class="card guide-section">
       <h2>結果ボードの見方</h2>
       <p>
-        結果ボードでは、保存済みの予測と公式結果を照合し、当選したレースだけを表示します。
+        結果ボードでは、保存済みの予測と公式結果を照合し、当選・不的中・未確定をレースごとに表示します。
         高額当選は50倍以上を強調し、100倍以上の万舟はさらに目立つ表示にしています。
       </p>
       <p>
@@ -141,6 +133,16 @@
       </p>
       <a class="cta-primary" href="index.html#predictButton">AI予測画面へ戻る</a>
     </section>
+    <footer>
+      <nav class="legal-links" aria-label="法務・運営情報">
+        <a href="operator.html">運営者情報</a>
+        <a href="terms.html">利用規約</a>
+        <a href="privacy.html">プライバシー</a>
+        <a href="disclaimer.html">免責事項</a>
+        <a href="commerce.html">特商法表記</a>
+      </nav>
+      <p>BOAT PREDICT AI / BETA</p>
+    </footer>
   </main>
 </body>
 </html>

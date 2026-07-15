@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import base64
+import gzip
+import hmac
 from html import escape
 import json
 import hashlib
@@ -35,7 +37,7 @@ OFFICIAL_HEADERS = {
 CACHE_SECONDS = 21600
 PAST_RESULT_CACHE_SECONDS = int(os.environ.get("BOAT_PAST_RESULT_CACHE_SECONDS", str(365 * 24 * 60 * 60)))
 FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_FETCH_TIMEOUT", "6"))
-PROGRAM_INDEX_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PROGRAM_INDEX_TIMEOUT", "11"))
+PROGRAM_INDEX_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PROGRAM_INDEX_TIMEOUT", "7"))
 DETAIL_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_DETAIL_FETCH_TIMEOUT", "3"))
 PAY_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PAY_FETCH_TIMEOUT", "14"))
 BEFOREINFO_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_BEFOREINFO_FETCH_TIMEOUT", "12"))
@@ -52,6 +54,9 @@ VENUE_FALLBACK_WORKERS = int(os.environ.get("BOAT_VENUE_FALLBACK_WORKERS", "4"))
 PROGRAM_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_PROGRAM_CACHE_MAX_ENTRIES", "300"))
 RESULTS_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_RESULTS_CACHE_MAX_ENTRIES", "500"))
 SIGNALS_CACHE_MAX_ENTRIES = int(os.environ.get("BOAT_SIGNALS_CACHE_MAX_ENTRIES", "1000"))
+MAX_REQUEST_BODY_BYTES = int(os.environ.get("BOAT_MAX_REQUEST_BODY_BYTES", str(256 * 1024)))
+MAX_LEARNING_EVENTS_PER_REQUEST = int(os.environ.get("BOAT_MAX_LEARNING_EVENTS", "24"))
+MAX_HTTP_THREADS = int(os.environ.get("BOAT_MAX_HTTP_THREADS", "48"))
 WORKER_STATUS_LOG_SECONDS = int(os.environ.get("BOAT_WORKER_STATUS_LOG_SECONDS", "300"))
 ADMIN_BACKFILL_RESULT_TIMEOUT = float(os.environ.get("BOAT_ADMIN_RESULT_TIMEOUT", "16"))
 ADMIN_BACKFILL_SIGNAL_TIMEOUT = float(os.environ.get("BOAT_ADMIN_SIGNAL_TIMEOUT", "2"))
@@ -107,6 +112,17 @@ VENUE_NAMES = [
     "下関", "若松", "芦屋", "福岡", "唐津", "大村",
 ]
 MANFUNE_YEN = 10000
+PUBLIC_STATIC_FILES = {
+    "/index.html",
+    "/app.js",
+    "/styles.css",
+    "/guide.html",
+    "/terms.html",
+    "/privacy.html",
+    "/disclaimer.html",
+    "/commerce.html",
+    "/operator.html",
+}
 cache = {}
 cache_lock = threading.Lock()
 fetch_locks = {}
@@ -119,6 +135,9 @@ results_cache_lock = threading.Lock()
 results_cache = {}
 signals_cache_lock = threading.Lock()
 signals_cache = {}
+signals_refresh_lock = threading.Lock()
+signals_refreshing = set()
+signals_refresh_slots = threading.BoundedSemaphore(2)
 racer_profile_cache_lock = threading.Lock()
 racer_profile_cache = {}
 lane_baseline_cache = {"savedAt": 0, "byLane": {}}
@@ -144,6 +163,8 @@ learning_cache_lock = threading.Lock()
 learning_store_cache = {"mtime": None, "store": None}
 result_board_cache_lock = threading.Lock()
 result_board_cache = {}
+seo_events_cache_lock = threading.Lock()
+seo_events_cache = {"signature": None, "events": {}}
 korogashi_month_cache_lock = threading.Lock()
 korogashi_month_cache = {}
 admin_backfill_lock = threading.Lock()
@@ -336,6 +357,8 @@ def save_learning_store(store):
             learning_store_cache["store"] = None
     with result_board_cache_lock:
         result_board_cache.clear()
+    with seo_events_cache_lock:
+        seo_events_cache.update({"signature": None, "events": {}})
     with korogashi_month_cache_lock:
         korogashi_month_cache.clear()
 
@@ -504,13 +527,17 @@ def record_racer_history_from_events(events):
 def record_learning_events(events):
     if not isinstance(events, list):
         return {"error": "events must be list"}
+    if len(events) > MAX_LEARNING_EVENTS_PER_REQUEST:
+        return {"error": "too many events"}
     changed_events = []
     with learning_lock:
-        store = read_learning_store()
-        stored_events = store.setdefault("events", {})
+        current_store = read_learning_store()
+        store = dict(current_store)
+        stored_events = dict(current_store.get("events") or {})
+        store["events"] = stored_events
         changed = False
         for event in events:
-            if not isinstance(event, dict):
+            if not valid_learning_event(event):
                 continue
             key = event.get("key")
             if not key:
@@ -546,6 +573,63 @@ def record_learning_events(events):
         record_racer_history_from_events(changed_events)
         schedule_racer_profile_rebuild(f"learning:{len(changed_events)}")
     return get_learning()
+
+
+def valid_iso_date(value):
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
+def valid_public_date(value, days_back=400, days_forward=7):
+    if not valid_iso_date(value):
+        return False
+    target = datetime.strptime(value, "%Y-%m-%d").date()
+    today = datetime.now(JST).date()
+    return today - timedelta(days=days_back) <= target <= today + timedelta(days=days_forward)
+
+
+def valid_jcd(value):
+    return value in BOATRACE_JCDS
+
+
+def bounded_json_value(value, depth=0):
+    if depth > 6:
+        return False
+    if value is None or isinstance(value, (bool, int, float)):
+        return True
+    if isinstance(value, str):
+        return len(value) <= 500
+    if isinstance(value, list):
+        return len(value) <= 40 and all(bounded_json_value(item, depth + 1) for item in value)
+    if isinstance(value, dict):
+        return len(value) <= 60 and all(
+            isinstance(key, str)
+            and len(key) <= 80
+            and bounded_json_value(item, depth + 1)
+            for key, item in value.items()
+        )
+    return False
+
+
+def valid_learning_event(event):
+    if not isinstance(event, dict) or not bounded_json_value(event):
+        return False
+    if not valid_iso_date(event.get("date")) or event.get("venue") not in VENUE_NAMES:
+        return False
+    try:
+        race = int(event.get("race"))
+    except (TypeError, ValueError):
+        return False
+    if not 1 <= race <= 12:
+        return False
+    key = event.get("key")
+    expected_key = f"{event.get('date')}-{event.get('venue')}-{race}"
+    return isinstance(key, str) and key == expected_key
 
 
 def normalize_ticket(ticket):
@@ -1014,7 +1098,7 @@ JCD_TO_SLUG = {
     f"{index + 1:02d}": slug
     for index, slug in enumerate(VENUE_SLUGS)
 }
-SEO_SITEMAP_CACHE = {"savedAt": 0, "body": ""}
+SEO_SITEMAP_CACHE = {"savedAt": 0, "origin": "", "body": ""}
 
 
 def venue_name_from_jcd(jcd):
@@ -1048,8 +1132,13 @@ def seo_ticket_text(ticket):
 
 def seo_latest_events():
     store = read_learning_store()
+    stored_events = store.get("events") or {}
+    signature = (store.get("updatedAt"), len(stored_events))
+    with seo_events_cache_lock:
+        if seo_events_cache["signature"] == signature:
+            return seo_events_cache["events"]
     latest = {}
-    for event in (store.get("events") or {}).values():
+    for event in stored_events.values():
         if not isinstance(event, dict):
             continue
         date = event.get("date")
@@ -1067,6 +1156,8 @@ def seo_latest_events():
         current = latest.get(key)
         if not current or str(current.get("savedAt") or "") <= str(event.get("savedAt") or ""):
             latest[key] = event
+    with seo_events_cache_lock:
+        seo_events_cache.update({"signature": signature, "events": latest})
     return latest
 
 
@@ -1099,6 +1190,69 @@ def seo_event_has_content(event):
     if not isinstance(event, dict):
         return False
     return bool(event.get("result") or event.get("picks") or event.get("exactaPicks"))
+
+
+def seo_event_indexable(event):
+    if not isinstance(event, dict):
+        return False
+    result = event.get("result")
+    racers = event.get("racers")
+    prediction_groups = seo_prediction_summary(event)
+    prediction_count = sum(len(tickets) for _label, tickets in prediction_groups)
+    complete_racers = 0
+    detailed_racers = 0
+    if isinstance(racers, list):
+        for racer in racers:
+            if not isinstance(racer, dict):
+                continue
+            if racer.get("name") and racer.get("registration") and racer.get("boat"):
+                complete_racers += 1
+            if any(racer.get(key) is not None for key in ("national", "local", "motor", "start")):
+                detailed_racers += 1
+    try:
+        payout = int(event.get("payout") or 0)
+    except (TypeError, ValueError):
+        payout = 0
+    return (
+        isinstance(result, list)
+        and len(result) >= 3
+        and payout > 0
+        and isinstance(racers, list)
+        and len(racers) == 6
+        and complete_racers == 6
+        and detailed_racers >= 4
+        and prediction_count >= 7
+        and event.get("source") == "prediction-screen"
+    )
+
+
+def seo_stat_text(value, digits=2, suffix=""):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "未取得"
+    return f"{number:.{digits}f}{suffix}"
+
+
+def seo_racers_html(event):
+    racers = event.get("racers") if isinstance(event.get("racers"), list) else []
+    items = []
+    for racer in sorted(racers, key=lambda item: int(item.get("boat") or 99)):
+        boat = racer.get("boat")
+        name = racer.get("name") or "選手名未取得"
+        grade = racer.get("grade") or "級別未取得"
+        registration = racer.get("registration") or "-"
+        stats = (
+            f"全国 {seo_stat_text(racer.get('national'))} / "
+            f"当地 {seo_stat_text(racer.get('local'))} / "
+            f"平均ST {seo_stat_text(racer.get('start'), 2)} / "
+            f"モーター {seo_stat_text(racer.get('motor'), 1, '%')}"
+        )
+        items.append(
+            f"<div class=\"item\"><small>{seo_escape(boat)}号艇・登録 {seo_escape(registration)}</small>"
+            f"<b>{seo_escape(name)}（{seo_escape(grade)}）</b><span>{seo_escape(stats)}</span></div>"
+        )
+    return "".join(items)
 
 
 def seo_prediction_summary(event):
@@ -1178,7 +1332,7 @@ def seo_page_shell(title, description, canonical, robots, body):
 
 def render_seo_race(origin, slug, date, race):
     jcd = SLUG_TO_JCD.get(slug)
-    if not jcd or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date or ""):
+    if not jcd or not valid_iso_date(date):
         return None, 404
     try:
         race_number = int(race)
@@ -1189,7 +1343,8 @@ def render_seo_race(origin, slug, date, race):
     venue = venue_name_from_jcd(jcd)
     event = seo_event_for(date, venue, race_number)
     has_content = seo_event_has_content(event)
-    robots = "index,follow" if has_content else "noindex,follow"
+    indexable = seo_event_indexable(event)
+    robots = "index,follow" if indexable else "noindex,follow"
     canonical = f"{origin}/boatrace/{slug}/{date}/{race_number}"
     title = f"{venue} {race_number}R 予想・結果 {date}｜競艇AI予測"
     if not has_content:
@@ -1218,6 +1373,20 @@ def render_seo_race(origin, slug, date, race):
   <div class="item"><small>的中判定</small><b>{seo_escape(hit_text)}</b></div>
   <div class="item"><small>2連単</small><b>{seo_escape(normalize_ticket((event.get('result') or [])[:2]) or '結果待ち')}</b></div>
 </div>"""
+    racers_html = seo_racers_html(event)
+    weather_parts = []
+    if event.get("weather"):
+        weather_parts.append(f"天候 {event.get('weather')}")
+    if event.get("wind") is not None:
+        weather_parts.append(f"風速 {seo_stat_text(event.get('wind'), 1, 'm/s')}")
+    if event.get("wave") is not None:
+        weather_parts.append(f"波高 {seo_stat_text(event.get('wave'), 0, 'cm')}")
+    conditions_html = seo_escape(" / ".join(weather_parts) or "公式気象データ未取得")
+    record_method = (
+        "このページはレース前に保存された予測ログと、レース後の公式確定結果を照合しています。"
+        if event.get("source") == "prediction-screen"
+        else "このページのモデル評価は確定後の再集計データを含むため、事前予測の的中実績としては扱いません。"
+    )
     answer = f"{date} {venue}{race_number}Rの競艇AI予測です。確定結果は{result_text}、AI予測の判定は{hit_text}です。"
     body = f"""
 <section class="hero">
@@ -1233,6 +1402,15 @@ def render_seo_race(origin, slug, date, race):
   <h2>確定結果と予測比較</h2>
   {result_html}
 </section>
+<section class="card">
+  <h2>出走選手・公式成績</h2>
+  <div class="grid">{racers_html}</div>
+</section>
+<section class="card">
+  <h2>レース条件と記録方法</h2>
+  <p>{conditions_html}</p>
+  <p>{seo_escape(record_method)} 事後バックフィルだけで生成したページは検索対象に含めません。</p>
+</section>
 {seo_internal_links(slug, date, race_number)}
 {seo_footer()}"""
     return seo_page_shell(title, description, canonical, robots, body), 200
@@ -1240,12 +1418,13 @@ def render_seo_race(origin, slug, date, race):
 
 def render_seo_day(origin, slug, date):
     jcd = SLUG_TO_JCD.get(slug)
-    if not jcd or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date or ""):
+    if not jcd or not valid_iso_date(date):
         return None, 404
     venue = venue_name_from_jcd(jcd)
     events = seo_events_for_day(date, venue)
+    indexable_events = {race: event for race, event in events.items() if seo_event_indexable(event)}
     has_content = bool(events)
-    robots = "index,follow" if has_content else "noindex,follow"
+    robots = "index,follow" if len(indexable_events) >= 6 else "noindex,follow"
     canonical = f"{origin}/boatrace/{slug}/{date}/"
     title = f"{venue} 予想・結果一覧 {date}｜競艇AI予測"
     description = f"{date} {venue}の競艇AI予測と確定結果一覧。12レースの的中判定、回収率、当選倍率を確認できます。"
@@ -1267,7 +1446,7 @@ def render_seo_day(origin, slug, date):
   <h1>{seo_escape(venue)} {seo_escape(date)} 予想・結果一覧</h1>
   <p class="answer">{seo_escape(date)}の{seo_escape(venue)}競艇AI予測一覧です。保存済みの予測と確定結果があるレースだけを検索対象にしています。</p>
 </section>
-<section class="card"><h2>的中率・回収率サマリー</h2><div class="grid">{summary_html}</div></section>
+<section class="card"><h2>当選結果・回収率サマリー</h2><div class="grid">{summary_html}</div></section>
 <section class="card"><h2>12レース一覧</h2><ul>{''.join(race_links)}</ul></section>
 {seo_internal_links(slug, date, None)}
 {seo_footer()}"""
@@ -1377,6 +1556,7 @@ def seo_footer():
 <footer>
   <p>BOAT PREDICT AI は競艇・ボートレースの予測と検証を目的とした情報サイトです。予測は的中を保証するものではありません。</p>
   <p>20歳未満の方は舟券を購入できません。投票は余裕資金の範囲で行い、のめり込みにご注意ください。</p>
+  <p><a href="/operator.html">運営者情報</a> / <a href="/terms.html">利用規約</a> / <a href="/privacy.html">プライバシー</a> / <a href="/disclaimer.html">免責事項</a> / <a href="/commerce.html">特商法に関する表示</a></p>
 </footer>"""
 
 
@@ -1392,18 +1572,27 @@ def render_seo_page(origin, slug, date=None, race=None):
 
 def build_sitemap_xml(origin, max_days=60):
     now = time.time()
-    if SEO_SITEMAP_CACHE["body"] and now - SEO_SITEMAP_CACHE["savedAt"] < 600:
+    if (
+        SEO_SITEMAP_CACHE["body"]
+        and SEO_SITEMAP_CACHE["origin"] == origin
+        and now - SEO_SITEMAP_CACHE["savedAt"] < 600
+    ):
         return SEO_SITEMAP_CACHE["body"]
     events = seo_latest_events()
     rows = [
         (f"{origin}/", datetime.now(JST).strftime("%Y-%m-%d")),
         (f"{origin}/guide.html", datetime.now(JST).strftime("%Y-%m-%d")),
+        (f"{origin}/operator.html", datetime.now(JST).strftime("%Y-%m-%d")),
+        (f"{origin}/terms.html", datetime.now(JST).strftime("%Y-%m-%d")),
+        (f"{origin}/privacy.html", datetime.now(JST).strftime("%Y-%m-%d")),
+        (f"{origin}/disclaimer.html", datetime.now(JST).strftime("%Y-%m-%d")),
+        (f"{origin}/commerce.html", datetime.now(JST).strftime("%Y-%m-%d")),
     ]
-    day_keys = set()
+    day_keys = {}
     venue_slugs = set()
     cutoff = datetime.now(JST).date() - timedelta(days=max_days)
     for (date, venue, race), event in events.items():
-        if not seo_event_has_content(event):
+        if not seo_event_indexable(event):
             continue
         try:
             if datetime.strptime(date, "%Y-%m-%d").date() < cutoff:
@@ -1418,10 +1607,14 @@ def build_sitemap_xml(origin, max_days=60):
             continue
         lastmod = (event.get("savedAt") or date)[:10]
         rows.append((f"{origin}/boatrace/{slug}/{date}/{race}", lastmod))
-        day_keys.add((slug, date, lastmod))
+        day_key = (slug, date)
+        day_stats = day_keys.setdefault(day_key, {"count": 0, "lastmod": lastmod})
+        day_stats["count"] += 1
+        day_stats["lastmod"] = max(day_stats["lastmod"], lastmod)
         venue_slugs.add(slug)
-    for slug, date, lastmod in sorted(day_keys):
-        rows.append((f"{origin}/boatrace/{slug}/{date}/", lastmod))
+    for (slug, date), stats in sorted(day_keys.items()):
+        if stats["count"] >= 6:
+            rows.append((f"{origin}/boatrace/{slug}/{date}/", stats["lastmod"]))
     for slug in sorted(venue_slugs):
         rows.append((f"{origin}/boatrace/{slug}/", datetime.now(JST).strftime("%Y-%m-%d")))
     body = "\n".join(
@@ -1433,7 +1626,7 @@ def build_sitemap_xml(origin, max_days=60):
 {body}
 </urlset>
 """
-    SEO_SITEMAP_CACHE.update({"savedAt": now, "body": xml})
+    SEO_SITEMAP_CACHE.update({"savedAt": now, "origin": origin, "body": xml})
     return xml
 
 
@@ -2226,11 +2419,18 @@ def read_racer_history():
 def write_racer_history(history):
     if not isinstance(history, dict):
         return
-    if RACER_HISTORY_MAX_ENTRIES and len(history) > RACER_HISTORY_MAX_ENTRIES:
-        for key in sorted(history.keys())[: len(history) - RACER_HISTORY_MAX_ENTRIES]:
-            history.pop(key, None)
     with racer_history_lock:
-        write_json_atomic(RACER_HISTORY_FILE, history)
+        try:
+            current = json.loads(RACER_HISTORY_FILE.read_text(encoding="utf-8"))
+            if not isinstance(current, dict):
+                current = {}
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            current = {}
+        current.update(history)
+        if RACER_HISTORY_MAX_ENTRIES and len(current) > RACER_HISTORY_MAX_ENTRIES:
+            for key in sorted(current.keys())[: len(current) - RACER_HISTORY_MAX_ENTRIES]:
+                current.pop(key, None)
+        write_json_atomic(RACER_HISTORY_FILE, current)
 
 
 def _finish_from_result(boat, result_list):
@@ -2680,6 +2880,13 @@ def get_cached_signals(date, jcd, race):
     return payload
 
 
+def get_stale_signals(date, jcd, race):
+    cache_key = f"{date}-{jcd}-{race}"
+    with signals_cache_lock:
+        cached = signals_cache.get(cache_key)
+    return cached.get("payload") if isinstance(cached, dict) else None
+
+
 def store_signals_payload(date, jcd, race, payload):
     cache_key = f"{date}-{jcd}-{race}"
     with signals_cache_lock:
@@ -3014,10 +3221,7 @@ def write_json_atomic(path, payload):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    try:
-        temporary.replace(path)
-    except OSError:
-        pass
+    temporary.replace(path)
 
 
 def request_cache_save(name):
@@ -3127,20 +3331,35 @@ def schedule_html_cache_cleanup_worker():
 
 
 def schedule_program_prefetch(date, jcd):
+    prefetch_key = f"{date}-{jcd}"
+    with prefetch_lock:
+        if prefetch_key in prefetching_programs:
+            return False
+        prefetching_programs.add(prefetch_key)
     thread = threading.Thread(
-        target=warm_program_races,
+        target=warm_program_races_reserved,
         args=(date, jcd),
         daemon=True,
     )
     thread.start()
+    return True
 
 
-def warm_program_races(date, jcd, progress_callback=None):
+def warm_program_races_reserved(date, jcd):
+    try:
+        warm_program_races(date, jcd, reserved=True)
+    finally:
+        with prefetch_lock:
+            prefetching_programs.discard(f"{date}-{jcd}")
+
+
+def warm_program_races(date, jcd, progress_callback=None, reserved=False):
     prefetch_key = f"{date}-{jcd}"
-    with prefetch_lock:
-        if prefetch_key in prefetching_programs:
-            return
-        prefetching_programs.add(prefetch_key)
+    if not reserved:
+        with prefetch_lock:
+            if prefetch_key in prefetching_programs:
+                return
+            prefetching_programs.add(prefetch_key)
     try:
         for race in range(1, 13):
             try:
@@ -3152,8 +3371,9 @@ def warm_program_races(date, jcd, progress_callback=None):
             if progress_callback:
                 progress_callback(jcd, race)
     finally:
-        with prefetch_lock:
-            prefetching_programs.discard(prefetch_key)
+        if not reserved:
+            with prefetch_lock:
+                prefetching_programs.discard(prefetch_key)
 
 
 def current_jst_date():
@@ -3416,11 +3636,15 @@ def enrich_learning_weather_from_signals(date, jcd, race, signals):
     event_key = f"{date}-{venue}-{int(race)}"
     weather = ((signals.get("beforeinfo") or {}).get("weather") or {})
     with learning_lock:
-        store = read_learning_store()
-        events = store.get("events") or {}
-        event = events.get(event_key)
-        if not isinstance(event, dict):
+        current_store = read_learning_store()
+        current_event = (current_store.get("events") or {}).get(event_key)
+        if not isinstance(current_event, dict):
             return False
+        store = dict(current_store)
+        events = dict(current_store.get("events") or {})
+        event = dict(current_event)
+        events[event_key] = event
+        store["events"] = events
         changed = False
         mapping = {
             "weather": weather.get("weather"),
@@ -4456,10 +4680,7 @@ def parse_odds3t(html_text):
     }
 
 
-def load_signals(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
-    cached = get_cached_signals(date, jcd, race)
-    if cached:
-        return cached
+def fetch_signals_live(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
     compact_date = date.replace("-", "")
     paths = {
         "expect": (f"/owpc/pc/race/pcexpect?rno={race}&jcd={jcd}&hd={compact_date}", 600),
@@ -4491,6 +4712,57 @@ def load_signals(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
     )
     store_signals_payload(date, jcd, race, payload)
     return payload
+
+
+def refresh_signals_reserved(date, jcd, race, timeout):
+    cache_key = f"{date}-{jcd}-{race}"
+    try:
+        fetch_signals_live(date, jcd, race, timeout=timeout)
+    except Exception:
+        pass
+    finally:
+        with signals_refresh_lock:
+            signals_refreshing.discard(cache_key)
+        signals_refresh_slots.release()
+
+
+def schedule_signals_refresh(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS):
+    cache_key = f"{date}-{jcd}-{race}"
+    with signals_refresh_lock:
+        if cache_key in signals_refreshing:
+            return False
+        if not signals_refresh_slots.acquire(blocking=False):
+            return False
+        signals_refreshing.add(cache_key)
+    thread = threading.Thread(
+        target=refresh_signals_reserved,
+        args=(date, jcd, race, timeout),
+        daemon=True,
+    )
+    thread.start()
+    return True
+
+
+def load_signals(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS, fast=False):
+    cached = get_cached_signals(date, jcd, race)
+    if cached:
+        return cached
+    if fast:
+        scheduled = schedule_signals_refresh(date, jcd, race, timeout=timeout)
+        stale = get_stale_signals(date, jcd, race)
+        if stale:
+            return {**stale, "stale": True, "refreshing": True}
+        return {
+            "date": date,
+            "jcd": jcd,
+            "race": race,
+            "available": False,
+            "refreshing": True,
+            "expect": {"available": False},
+            "beforeinfo": {"available": False, "racers": {}, "weather": {"available": False}},
+            "odds": {"available": False, "odds": {}, "firstPopularity": []},
+        }
+    return fetch_signals_live(date, jcd, race, timeout=timeout)
 
 
 def load_program(date, jcd, selected_race, should_prefetch=True, fast=False):
@@ -4742,15 +5014,17 @@ def load_result(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS, include_weather=
 
 
 def normalize_race_list(races):
+    if races is None:
+        return list(range(1, 13))
     normalized = []
-    for race in races or range(1, 13):
+    for race in races:
         try:
             race_number = int(race)
         except (TypeError, ValueError):
             continue
         if 1 <= race_number <= 12 and race_number not in normalized:
             normalized.append(race_number)
-    return normalized or list(range(1, 13))
+    return normalized
 
 
 def load_results(date, jcd, races=None, max_workers=RESULT_FETCH_WORKERS, timeout=FETCH_TIMEOUT_SECONDS):
@@ -4759,23 +5033,6 @@ def load_results(date, jcd, races=None, max_workers=RESULT_FETCH_WORKERS, timeou
     today = current_jst_date()
     if date == today:
         schedule_pay_refresh(date)
-        cached_pay = get_cached_pay_results(date).get(jcd, {})
-        if any(race not in cached_pay for race in target_races):
-            refresh_pay_results_now(
-                date,
-                timeout=PAY_FETCH_TIMEOUT_SECONDS,
-                force=False,
-                reason="inline-results",
-            )
-    elif date > today:
-        try:
-            pay_results = load_pay_results(date, timeout=PAY_FETCH_TIMEOUT_SECONDS).get(jcd, {})
-        except Exception:
-            pay_results = {}
-        for race in target_races:
-            payload = pay_results.get(race)
-            if payload:
-                store_result_payload(date, jcd, race, payload)
     with results_cache_lock:
         cached = results_cache.get(cache_key)
         if cached:
@@ -4795,6 +5052,21 @@ def load_results(date, jcd, races=None, max_workers=RESULT_FETCH_WORKERS, timeou
             results = dict(cached_results)
         else:
             results = {}
+    if date < today:
+        missing_from_store = [
+            race for race in target_races
+            if not (results.get(str(race)) or {}).get("available")
+        ]
+        if missing_from_store:
+            try:
+                pay_results = load_pay_results(date, timeout=PAY_FETCH_TIMEOUT_SECONDS).get(jcd, {})
+            except Exception:
+                pay_results = {}
+            for race in missing_from_store:
+                payload = pay_results.get(race)
+                if payload:
+                    store_result_payload(date, jcd, race, payload)
+                    results[str(race)] = payload
     if date == today:
         missing = [
             race for race in target_races
@@ -4969,14 +5241,52 @@ def load_venues_status(date):
     return payload
 
 
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, server_address, request_handler_class, max_threads=MAX_HTTP_THREADS):
+        self.request_slots = threading.BoundedSemaphore(max(1, max_threads))
+        super().__init__(server_address, request_handler_class)
+
+    def process_request(self, request, client_address):
+        if not self.request_slots.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Connection: close\r\nContent-Length: 0\r\n\r\n"
+                )
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.request_slots.release()
+
+
 class AppHandler(SimpleHTTPRequestHandler):
     def is_admin_request(self, path):
         return path in ("/admin", "/admin.html", "/admin.js") or path.startswith("/api/admin/")
 
-    def require_admin_auth(self):
-        password = os.environ.get("ADMIN_PASSWORD", "boatadmin")
+    def has_admin_auth(self):
+        password = os.environ.get("ADMIN_PASSWORD", "")
+        if not password:
+            return False
         expected = "Basic " + base64.b64encode(f"admin:{password}".encode()).decode()
-        if self.headers.get("Authorization") == expected:
+        return hmac.compare_digest(self.headers.get("Authorization", ""), expected)
+
+    def require_admin_auth(self):
+        if not os.environ.get("ADMIN_PASSWORD"):
+            return self.send_text("Admin is disabled until ADMIN_PASSWORD is configured.", 503)
+        if self.has_admin_auth():
             return True
         self.send_response(401)
         self.send_header("WWW-Authenticate", 'Basic realm="BOAT PREDICT AI Admin"')
@@ -4985,15 +5295,120 @@ class AppHandler(SimpleHTTPRequestHandler):
         self.wfile.write("Authentication required".encode("utf-8"))
         return False
 
+    def valid_admin_origin(self):
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        expected = seo_public_origin(self)
+        return origin.rstrip("/") == expected.rstrip("/")
+
+    def redirect_to_canonical_host(self, path):
+        configured = os.environ.get("BOAT_PUBLIC_ORIGIN", "").rstrip("/")
+        if not configured:
+            return False
+        configured_host = urlparse(configured).netloc.lower()
+        request_host = self.headers.get("Host", "").lower()
+        is_public_page = (
+            path in ("/", "/index.html")
+            or path in PUBLIC_STATIC_FILES
+            or path.startswith("/boatrace/")
+            or path in ("/sitemap.xml", "/robots.txt")
+        )
+        if not is_public_page or request_host == configured_host or "onrender.com" not in request_host:
+            return False
+        self.send_response(308)
+        self.send_header("Location", f"{configured}{self.path}")
+        self.send_header("Cache-Control", "public, max-age=300")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
+
+    def serve_public_html(self, path):
+        filename = "index.html" if path in ("/", "/index.html") else path.lstrip("/")
+        try:
+            html_text = Path(__file__).with_name(filename).read_text(encoding="utf-8")
+        except OSError:
+            return self.send_error(404)
+        configured_origin = seo_public_origin(self)
+        html_text = html_text.replace("https://boat-predict-ai.onrender.com", configured_origin)
+        return self.send_text(
+            html_text,
+            content_type="text/html; charset=utf-8",
+            cache_control="public, max-age=300, s-maxage=900, stale-while-revalidate=86400",
+        )
+
+    def serve_public_asset(self, path):
+        filename = path.lstrip("/")
+        try:
+            text = Path(__file__).with_name(filename).read_text(encoding="utf-8")
+        except OSError:
+            return self.send_error(404)
+        content_type = "application/javascript; charset=utf-8" if path.endswith(".js") else "text/css; charset=utf-8"
+        return self.send_text(
+            text,
+            content_type=content_type,
+            cache_control="public, max-age=31536000, immutable",
+        )
+
+    def encode_response_body(self, body, content_type):
+        accepts_gzip = "gzip" in self.headers.get("Accept-Encoding", "").lower()
+        compressible = content_type.startswith(("text/", "application/json", "application/javascript", "application/xml"))
+        if accepts_gzip and compressible and len(body) >= 1024:
+            return gzip.compress(body, compresslevel=5), "gzip"
+        return body, ""
+
     def end_headers(self):
-        if self.path == "/" or self.path.endswith((".html", ".js", ".css")):
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        path = urlparse(self.path).path
+        has_cache_control = any(
+            header.lower().startswith(b"cache-control:")
+            for header in getattr(self, "_headers_buffer", [])
+        )
+        if not has_cache_control:
+            if path.endswith((".js", ".css")):
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            elif path in ("/", "/index.html") or path.endswith(".html"):
+                self.send_header("Cache-Control", "public, max-age=300, s-maxage=900, stale-while-revalidate=86400")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+        if "onrender.com" in self.headers.get("Host", "") or os.environ.get("RENDER"):
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com; "
+            "connect-src 'self' https://www.google-analytics.com https://region1.google-analytics.com; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src https://fonts.gstatic.com data:; img-src 'self' data: https:; "
+            "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'",
+        )
         super().end_headers()
+
+    def do_HEAD(self):
+        parsed = urlparse(self.path)
+        if self.redirect_to_canonical_host(parsed.path):
+            return
+        if self.is_admin_request(parsed.path) and not self.require_admin_auth():
+            return
+        if parsed.path in ("/", "/index.html", "/admin.html", "/admin.js") or parsed.path in PUBLIC_STATIC_FILES:
+            return super().do_HEAD()
+        if re.fullmatch(r"/boatrace/[a-z]+(?:/\d{4}-\d{2}-\d{2}(?:/\d{1,2}/?)?)?/?", parsed.path):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "public, max-age=300")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_error(404)
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if self.redirect_to_canonical_host(parsed.path):
+            return
         if self.is_admin_request(parsed.path) and not self.require_admin_auth():
             return
+        if parsed.path in ("/", "/index.html"):
+            return self.serve_public_html(parsed.path)
         if parsed.path == "/admin":
             self.path = "/admin.html"
             return super().do_GET()
@@ -5003,29 +5418,11 @@ class AppHandler(SimpleHTTPRequestHandler):
             return self.send_json(get_learning())
         if parsed.path == "/api/admin/backfill-status":
             return self.send_json(get_admin_backfill_status())
-        if parsed.path == "/api/admin/backfill":
-            query = parse_qs(parsed.query)
-            date = query.get("date", [""])[0]
-            force = query.get("force", ["0"])[0] == "1"
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-                return self.send_json({"error": "invalid parameters"}, 400)
-            return self.send_json(schedule_admin_backfill(date, force=force))
-        if parsed.path == "/api/admin/backfill-range":
-            query = parse_qs(parsed.query)
-            from_date = query.get("from", [""])[0]
-            to_date = query.get("to", [""])[0]
-            force = query.get("force", ["1"])[0] != "0"
-            ok, payload = schedule_backfill_range(from_date, to_date, force=force)
-            return self.send_json(payload, 200 if ok else 400)
-        if parsed.path == "/api/admin/backfill-range/cancel":
-            return self.send_json(cancel_backfill_range())
         if parsed.path == "/api/admin/racer-profile-status":
             query = parse_qs(parsed.query)
             registration = query.get("registration", [""])[0]
             lane = query.get("lane", [""])[0]
             return self.send_json(get_racer_profile_status(registration=registration, lane=lane))
-        if parsed.path == "/api/admin/racer-profile-rebuild":
-            return self.send_json(schedule_racer_profile_rebuild("admin"))
         if parsed.path == "/api/admin/weather-fetch-status":
             return self.send_json(get_weather_fetch_status())
         if parsed.path == "/api/admin/pay-refresh-status":
@@ -5034,18 +5431,6 @@ class AppHandler(SimpleHTTPRequestHandler):
             if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
                 return self.send_json({"error": "invalid parameters"}, 400)
             return self.send_json(get_pay_refresh_status(date))
-        if parsed.path == "/api/admin/pay-refresh":
-            query = parse_qs(parsed.query)
-            date = query.get("date", [current_jst_date()])[0]
-            force = query.get("force", ["1"])[0] != "0"
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-                return self.send_json({"error": "invalid parameters"}, 400)
-            return self.send_json(refresh_pay_results_now(
-                date,
-                timeout=PAY_FETCH_TIMEOUT_SECONDS,
-                force=force,
-                reason="admin",
-            ))
         if parsed.path == "/api/admin/performance":
             query = parse_qs(parsed.query)
             date = query.get("date", [""])[0]
@@ -5056,16 +5441,9 @@ class AppHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             date = query.get("date", [""])[0]
             jcd = query.get("jcd", [""])[0].zfill(2)
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) or not re.fullmatch(r"\d{2}", jcd):
+            if not valid_public_date(date) or not valid_jcd(jcd):
                 return self.send_json({"error": "invalid parameters"}, 400)
             return self.send_json(build_result_board(date, jcd))
-        if parsed.path == "/api/korogashi-month":
-            query = parse_qs(parsed.query)
-            date = query.get("date", [""])[0]
-            jcd = query.get("jcd", [""])[0].zfill(2)
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) or not re.fullmatch(r"\d{2}", jcd):
-                return self.send_json({"error": "invalid parameters"}, 400)
-            return self.send_json(get_korogashi_month_cached(date, jcd))
         if parsed.path == "/sitemap.xml":
             return self.send_xml(build_sitemap_xml(seo_public_origin(self)))
         if parsed.path == "/robots.txt":
@@ -5094,19 +5472,25 @@ class AppHandler(SimpleHTTPRequestHandler):
                 return self.send_error(404)
             return self.send_html(html_text, status=status)
         if parsed.path not in ("/api/program", "/api/result", "/api/results", "/api/signals", "/api/venues"):
-            return super().do_GET()
+            if parsed.path in ("/admin.html", "/admin.js"):
+                return super().do_GET()
+            if parsed.path in PUBLIC_STATIC_FILES:
+                if parsed.path.endswith(".html"):
+                    return self.serve_public_html(parsed.path)
+                return self.serve_public_asset(parsed.path)
+            return self.send_error(404)
         query = parse_qs(parsed.query)
         date = query.get("date", [""])[0]
         jcd = query.get("jcd", [""])[0].zfill(2)
         race = query.get("race", ["1"])[0]
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        if not valid_public_date(date):
             return self.send_json({"error": "invalid parameters"}, 400)
         if parsed.path == "/api/venues":
             try:
                 return self.send_json(load_venues_status(date))
             except Exception as error:
                 return self.send_json({"error": str(error)}, 502)
-        if not re.fullmatch(r"\d{2}", jcd):
+        if not valid_jcd(jcd):
             return self.send_json({"error": "invalid parameters"}, 400)
         if parsed.path != "/api/results" and (
             not race.isdigit() or not 1 <= int(race) <= 12
@@ -5120,9 +5504,12 @@ class AppHandler(SimpleHTTPRequestHandler):
                 requested_races = []
                 for value in query.get("races", []):
                     requested_races.extend(value.split(","))
+                if query.get("races") and not normalize_race_list(requested_races):
+                    return self.send_json({"error": "invalid races"}, 400)
                 self.send_json(load_results(date, jcd, requested_races))
             elif parsed.path == "/api/signals":
-                self.send_json(load_signals(date, jcd, int(race)))
+                fast = query.get("fast", ["0"])[0] == "1"
+                self.send_json(load_signals(date, jcd, int(race), fast=fast))
             else:
                 fast = query.get("fast", ["0"])[0] == "1"
                 self.send_json(load_program(date, jcd, int(race), fast=fast))
@@ -5131,22 +5518,66 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/admin/"):
+            if not self.require_admin_auth():
+                return
+            if not self.valid_admin_origin():
+                return self.send_json({"error": "invalid origin"}, 403)
+            query = parse_qs(parsed.query)
+            if parsed.path == "/api/admin/backfill":
+                date = query.get("date", [""])[0]
+                if not valid_iso_date(date):
+                    return self.send_json({"error": "invalid parameters"}, 400)
+                return self.send_json(schedule_admin_backfill(date, force=query.get("force", ["0"])[0] == "1"))
+            if parsed.path == "/api/admin/backfill-range":
+                ok, payload = schedule_backfill_range(
+                    query.get("from", [""])[0],
+                    query.get("to", [""])[0],
+                    force=query.get("force", ["1"])[0] != "0",
+                )
+                return self.send_json(payload, 200 if ok else 400)
+            if parsed.path == "/api/admin/backfill-range/cancel":
+                return self.send_json(cancel_backfill_range())
+            if parsed.path == "/api/admin/racer-profile-rebuild":
+                return self.send_json(schedule_racer_profile_rebuild("admin"))
+            if parsed.path == "/api/admin/pay-refresh":
+                date = query.get("date", [current_jst_date()])[0]
+                if not valid_iso_date(date):
+                    return self.send_json({"error": "invalid parameters"}, 400)
+                return self.send_json(refresh_pay_results_now(
+                    date,
+                    timeout=PAY_FETCH_TIMEOUT_SECONDS,
+                    force=query.get("force", ["1"])[0] != "0",
+                    reason="admin",
+                ))
+            return self.send_json({"error": "not found"}, 404)
         if parsed.path != "/api/learning":
             return self.send_json({"error": "not found"}, 404)
+        if not self.has_admin_auth():
+            return self.send_json({"error": "public learning writes are disabled"}, 403)
         try:
             length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > MAX_REQUEST_BODY_BYTES:
+                return self.send_json({"error": "request body too large"}, 413)
             body = self.rfile.read(length).decode("utf-8")
             payload = json.loads(body or "{}")
-            self.send_json(record_learning_events(payload.get("events", [])))
+            events = payload.get("events", [])
+            if not isinstance(events, list) or len(events) > MAX_LEARNING_EVENTS_PER_REQUEST:
+                return self.send_json({"error": "invalid events"}, 400)
+            self.send_json(record_learning_events(events))
         except Exception as error:
             self.send_json({"error": str(error)}, 400)
 
     def send_json(self, payload, status=200):
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        body, content_encoding = self.encode_response_body(body, "application/json; charset=utf-8")
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            if content_encoding:
+                self.send_header("Content-Encoding", content_encoding)
+                self.send_header("Vary", "Accept-Encoding")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -5155,10 +5586,14 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def send_text(self, text, status=200, content_type="text/plain; charset=utf-8", cache_control="no-store"):
         body = (text or "").encode("utf-8")
+        body, content_encoding = self.encode_response_body(body, content_type)
         try:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", cache_control)
+            if content_encoding:
+                self.send_header("Content-Encoding", content_encoding)
+                self.send_header("Vary", "Accept-Encoding")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -5185,7 +5620,7 @@ class AppHandler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     host = "0.0.0.0"
     port = int(os.environ.get("PORT", "4174"))
-    server = ThreadingHTTPServer((host, port), AppHandler)
+    server = BoundedThreadingHTTPServer((host, port), AppHandler)
     shutdown_requested = threading.Event()
 
     def graceful_shutdown(signum, frame):
@@ -5224,7 +5659,8 @@ if __name__ == "__main__":
         schedule_racer_profile_worker()
     if LONG_BACKFILL_ENABLED:
         schedule_long_backfill_worker()
-    resume_backfill_range_on_startup()
+    if os.environ.get("BOAT_RESUME_BACKFILL", "0") == "1":
+        resume_backfill_range_on_startup()
     try:
         server.serve_forever()
     finally:

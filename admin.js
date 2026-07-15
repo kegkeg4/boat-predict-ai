@@ -12,6 +12,15 @@ const coverageBox = document.querySelector("#adminCoverage");
 const LEARNING_LOG_KEY = "boat-predict-learning-log-v1";
 let backfillPollTimer = null;
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function toInputDate(date) {
   return [
     date.getFullYear(),
@@ -55,7 +64,7 @@ function renderCoverage(payload) {
     return;
   }
   const venueText = missingVenues
-    .map((row) => `${row.venue} ${row.saved}/${row.expected}`)
+    .map((row) => `${escapeHtml(row.venue)} ${Number(row.saved) || 0}/${Number(row.expected) || 0}`)
     .join("、");
   coverageBox.hidden = false;
   coverageBox.innerHTML = `
@@ -115,8 +124,8 @@ function renderPerformance(payload) {
   tableBody.innerHTML = rows.map((row) => `
     <tr>
       <td>
-        ${row.venue}
-        ${row.sources ? `<small class="admin-source-note">${Object.entries(row.sources).map(([source, count]) => `${source}:${count}`).join(" / ")}</small>` : ""}
+        ${escapeHtml(row.venue)}
+        ${row.sources ? `<small class="admin-source-note">${Object.entries(row.sources).map(([source, count]) => `${escapeHtml(source)}:${Number(count) || 0}`).join(" / ")}</small>` : ""}
       </td>
       <td class="${row.honmei.net >= 0 ? "plus" : "minus"}">${formatSignedYen(row.honmei.net)}</td>
       <td class="${row.nerai.net >= 0 ? "plus" : "minus"}">${formatSignedYen(row.nerai.net)}</td>
@@ -172,7 +181,7 @@ async function loadPerformance() {
     statusText.textContent = "管理データの取得に失敗しました。";
     coverageBox.hidden = true;
     coverageBox.innerHTML = "";
-    tableBody.innerHTML = `<tr><td colspan="5" class="admin-empty">${error.message}</td></tr>`;
+    tableBody.innerHTML = `<tr><td colspan="5" class="admin-empty">${escapeHtml(error.message)}</td></tr>`;
     tableFoot.innerHTML = "";
   } finally {
     reloadButton.disabled = false;
@@ -240,6 +249,7 @@ async function startBackfill() {
   statusText.textContent = "サーバー側で全会場の一括集計を開始します...";
   try {
     const response = await fetch(`/api/admin/backfill?date=${encodeURIComponent(dateInput.value)}&force=1`, {
+      method: "POST",
       credentials: "same-origin",
     });
     if (!response.ok) throw new Error(`backfill ${response.status}`);
@@ -267,7 +277,7 @@ async function startRangeBackfill() {
   statusText.textContent = "サーバー側で範囲指定の連続集計を開始します...";
   try {
     const url = `/api/admin/backfill-range?from=${encodeURIComponent(fromDate)}&to=${encodeURIComponent(toDate)}&force=1`;
-    const response = await fetch(url, { credentials: "same-origin" });
+    const response = await fetch(url, { method: "POST", credentials: "same-origin" });
     const status = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(status.error || `backfill-range ${response.status}`);
     renderBackfillStatus(status);
@@ -285,6 +295,7 @@ async function cancelRangeBackfill() {
   statusText.textContent = "連続集計の停止を依頼しています...";
   try {
     const response = await fetch("/api/admin/backfill-range/cancel", {
+      method: "POST",
       credentials: "same-origin",
     });
     if (!response.ok) throw new Error(`cancel ${response.status}`);

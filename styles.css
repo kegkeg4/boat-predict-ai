@@ -694,6 +694,9 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .result-board-race-main span { display: block; margin-top: 6px; color: #6f7f90; font-size: 10px; font-weight: 800; line-height: 1.35; }
 .result-board-race-hits { display: grid; gap: 7px; min-width: 0; }
 .result-board-race.winner { border-color: #bde4d6; background: linear-gradient(135deg, #f5fcf9, #fff); }
+.result-board-race.loser { border-color: #e7edf3; background: #fbfcfd; }
+.result-board-race.loser .result-board-race-main strong,
+.result-board-race.pending .result-board-race-main strong { color: #647487; }
 .result-board-race.high-payout { grid-template-columns: 148px minmax(0, 1fr); padding: 15px 18px; border: 0; overflow: hidden; box-shadow: 0 10px 28px rgba(185, 77, 120, .16); }
 .result-board-race.high-payout .result-board-race-main small,
 .result-board-race.high-payout .result-board-race-main strong,
@@ -714,6 +717,7 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .result-board-hit-line small { color: currentColor; opacity: .68; font-size: 7px; font-weight: 900; letter-spacing: .12em; }
 .result-board-hit-line b { overflow: hidden; color: currentColor; font-size: 13px; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
 .result-board-hit-line span:last-child b { font-size: 20px; letter-spacing: -.03em; }
+.result-board-hit-line.miss span { color: #607286; background: #eef3f7; }
 .result-board-hit-line.gold span { color: #6a4300; background: linear-gradient(135deg, #fff4b7, #f7c849 52%, #fff1a2); border: 1px solid rgba(224, 182, 41, .8); }
 .result-board-hit-line.rainbow span { color: #fff; background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.42); text-shadow: 0 1px 3px rgba(0,0,0,.2); }
 .result-board-chip { display: inline-grid; gap: 2px; max-width: 100%; padding: 8px 10px; border-radius: 12px; color: #0b8060; background: #e7f8f1; font-size: 9px; font-weight: 900; white-space: nowrap; }
@@ -828,6 +832,13 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 .guide-grid strong { display: block; margin-top: 6px; font-size: 15px; }
 .guide-grid p { margin: 7px 0 0; font-size: 10px; line-height: 1.7; }
 .guide-warning { border-color: #ffd8aa; background: linear-gradient(135deg, #fffaf2, #fff); }
+.legal-table { display: grid; gap: 0; margin: 0; border: 1px solid #e0e8f0; border-radius: 12px; overflow: hidden; }
+.legal-table > div { display: grid; grid-template-columns: 180px minmax(0, 1fr); border-top: 1px solid #e0e8f0; }
+.legal-table > div:first-child { border-top: 0; }
+.legal-table dt, .legal-table dd { margin: 0; padding: 12px 14px; font-size: 11px; line-height: 1.7; }
+.legal-table dt { color: #425a71; background: #f3f7fa; font-weight: 900; }
+.legal-table dd { color: #607286; background: #fff; }
+.legal-table a { color: #0877f9; }
 .korogashi-game { margin-top: 18px; padding: 22px 24px; background: linear-gradient(135deg, #fff, #f7fbff 58%, #fff8ed); }
 .korogashi-game .card-heading > span { padding: 7px 10px; border-radius: 999px; color: #0877f9; background: #eaf4ff; font-size: 10px; font-weight: 900; white-space: nowrap; }
 .korogashi-game .card-heading > span.buy { color: #0a9a70; background: #e6f8f1; }
@@ -918,6 +929,26 @@ tbody tr:last-child td { border-bottom: 0; }
 @keyframes skeletonPulse { to { transform: translateX(100%); } }
 
 footer { display: flex; justify-content: space-between; padding: 22px 3px 0; color: #9aa7b3; font-size: 9px; }
+.legal-links { display: flex; flex-wrap: wrap; gap: 7px 12px; margin-top: 7px; }
+.legal-links a { color: #65778a; font-weight: 800; text-decoration: none; }
+.legal-links a:hover { color: #0877f9; }
+.analytics-consent {
+  position: fixed;
+  z-index: 1000;
+  right: 18px;
+  bottom: 18px;
+  width: min(430px, calc(100% - 36px));
+  padding: 15px;
+  border: 1px solid #d5e2ee;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 18px 50px rgba(19, 37, 58, .2);
+}
+.analytics-consent p { margin: 0; color: #5f7184; font-size: 11px; line-height: 1.65; }
+.analytics-consent a { color: #0877f9; }
+.analytics-consent > div { display: flex; justify-content: flex-end; gap: 8px; margin-top: 11px; }
+.analytics-consent button { padding: 8px 12px; border: 1px solid #cfdbe7; border-radius: 8px; color: #52667a; background: #fff; font-weight: 800; }
+.analytics-consent button.accept { border-color: #0877f9; color: #fff; background: #0877f9; }
 
 .admin-page { background: #eef4fa; }
 .admin-shell { max-width: 1120px; margin: 0 auto; padding: 34px 18px 46px; }
@@ -1051,6 +1082,9 @@ footer { display: flex; justify-content: space-between; padding: 22px 3px 0; col
   .guide-page { width: min(100% - 24px, 920px); padding-top: 20px; }
   .guide-hero, .guide-section { padding: 18px 16px; }
   .guide-actions { display: grid; }
+  .legal-table > div { grid-template-columns: 1fr; }
+  .legal-table dt { padding-bottom: 6px; }
+  .legal-table dd { padding-top: 6px; }
   .result-board-summary { grid-template-columns: 1fr; }
   .result-card { padding: 19px 15px; }
   .official-card { padding: 19px 15px; }
