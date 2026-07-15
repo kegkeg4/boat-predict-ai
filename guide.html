@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="BOAT PREDICT AIの使い方、競艇AI予測の仕組み、全国24場の競艇場ごとの特徴、的中率・回収率の見方をまとめたガイドページです。">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://boat-predict-ai.onrender.com/guide.html">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://boat-predict-ai.onrender.com/guide.html">
+  <meta property="og:title" content="競艇AI予測の使い方と仕組み｜BOAT PREDICT AIガイド">
+  <meta property="og:description" content="競艇・ボートレース予測AIの使い方、予測ロジック、結果ボードの見方、全国24場の特徴をわかりやすく解説します。">
+  <meta property="og:site_name" content="BOAT PREDICT AI">
+  <title>競艇AI予測の使い方と仕組み｜BOAT PREDICT AIガイド</title>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-NF2DHHM9C3"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-NF2DHHM9C3');
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "競艇AI予測の使い方と仕組み",
+    "description": "BOAT PREDICT AIの使い方、予測ロジック、全国24場の特徴、結果ボードの見方をまとめたガイドです。",
+    "author": {
+      "@type": "Organization",
+      "name": "BOAT PREDICT AI"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "BOAT PREDICT AI"
+    },
+    "mainEntityOfPage": "https://boat-predict-ai.onrender.com/guide.html"
+  }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=20260715-guide-page">
+</head>
+<body>
+  <main class="guide-page">
+    <a class="guide-back" href="index.html">← AI予測画面へ戻る</a>
+
+    <section class="card guide-hero">
+      <p class="eyebrow">BOAT PREDICT AI GUIDE</p>
+      <h1>競艇AI予測の使い方と仕組み</h1>
+      <p>
+        BOAT PREDICT AIは、全国24か所の競艇場で行われるレースの出走表・オッズ・公式結果を整理し、
+        本命・狙い目・穴の買い目候補を参考情報として表示するボートレース予測ツールです。
+      </p>
+      <div class="guide-actions">
+        <a class="cta-primary" href="index.html#predictButton">本日の予測を見る</a>
+        <a class="cta-secondary" href="index.html#resultBoard">結果ボードを見る</a>
+      </div>
+    </section>
+
+    <section class="card guide-section">
+      <h2>このサービスでできること</h2>
+      <p>
+        全国24か所の競艇場で行われるレースの出走表・オッズ・公式結果を自動で取得し、
+        AIが整理・表示します。予測は参考情報として提供しており、的中率・回収率の実績データを自動集計して公開しています。
+      </p>
+      <p>
+        「どの予測が当たって、どれが外れたか」を透明に確認できることが、このサービスの特徴です。
+        的中を保証するものではなく、過去結果と予測ログを見ながら判断材料を増やすためのツールです。
+      </p>
+    </section>
+
+    <section class="card guide-section">
+      <h2>予測はどのように作られるか</h2>
+      <p>
+        出走選手の級別・全国勝率・当地勝率・モーターの性能・スタートタイミング・展示タイムなど、
+        公式サイトで公開されているデータを自動収集し、本命・狙い目・穴の3つの視点で買い目候補を生成します。
+      </p>
+      <div class="guide-grid">
+        <article>
+          <small>本命</small>
+          <strong>堅めの候補</strong>
+          <p>1コースの信頼度、選手力、モーター、展示の安定感を重視します。</p>
+        </article>
+        <article>
+          <small>狙い目</small>
+          <strong>期待値候補</strong>
+          <p>人気と実力のズレ、オッズと予測確率のバランスを見ます。</p>
+        </article>
+        <article>
+          <small>穴</small>
+          <strong>高配当候補</strong>
+          <p>荒れやすい水面、風・波、外からの展開、人気薄の一撃を探します。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="card guide-section">
+      <h2>競艇場ごとの特徴</h2>
+      <p>
+        全国24か所の競艇場はそれぞれ水面の広さ・潮の満ち引き・風向きの傾向が異なります。
+        淡水の河川コースである江戸川・戸田は波乱が起きやすい一方、大村・徳山などは1コースの1着率が高く堅い傾向があります。
+      </p>
+      <p>
+        各競艇場のページでは、その場ならではの傾向と予測実績を確認できます。会場のクセは予測の見方にも影響するため、
+        同じ1号艇でも「強く信頼できる場」と「過信しすぎない方がよい場」を分けて見ることが大切です。
+      </p>
+    </section>
+
+    <section class="card guide-section">
+      <h2>基本的な使い方</h2>
+      <ol>
+        <li>AI予測画面で開催場と日付を選択する</li>
+        <li>レース一覧から確認したいレースを選ぶ</li>
+        <li>本命・狙い目・穴・2連単の候補を参考にする</li>
+        <li>レース後、結果ボードで当選本数・回収率・高額当選を確認する</li>
+      </ol>
+      <p>
+        登録・ログイン不要でご利用いただけます。舟券の購入・払戻はこのサービスでは行えません。
+        公営競技の舟券購入はBOAT RACEオフィシャルウェブサイトまたは場外発売所をご利用ください。
+      </p>
+    </section>
+
+    <section class="card guide-section">
+      <h2>結果ボードの見方</h2>
+      <p>
+        結果ボードでは、保存済みの予測と公式結果を照合し、当選したレースだけを表示します。
+        高額当選は50倍以上を強調し、100倍以上の万舟はさらに目立つ表示にしています。
+      </p>
+      <p>
+        短期間の結果は高配当1本で大きく上下します。1日単位の勝ち負けだけでなく、会場ごとの傾向や長期の回収率も合わせて確認してください。
+      </p>
+    </section>
+
+    <section class="card guide-section guide-warning">
+      <h2>ご利用上の注意</h2>
+      <p>
+        予測は的中を保証するものではありません。投票はご自身の判断と責任で行ってください。
+        20歳未満の方は投票券を購入できません。無理のない範囲でお楽しみください。
+      </p>
+      <a class="cta-primary" href="index.html#predictButton">AI予測画面へ戻る</a>
+    </section>
+  </main>
+</body>
+</html>

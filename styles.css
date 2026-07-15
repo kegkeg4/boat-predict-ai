@@ -295,14 +295,14 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 14px;
-  padding: 16px 18px;
-  border-radius: 14px;
+  gap: 12px;
+  margin: 8px 0 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
   color: #fff;
   background: linear-gradient(90deg, #ff2f6d, #ff9f1c, #ffe600, #12d176, #00a8ff, #725cff, #ff2f6d);
   background-size: 260% 100%;
-  box-shadow: 0 18px 45px rgba(255, 80, 120, .24);
+  box-shadow: 0 10px 28px rgba(255, 80, 120, .18);
   animation: rainbow-flow 5s linear infinite;
   overflow: hidden;
 }
@@ -330,9 +330,9 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
   pointer-events: none;
 }
 .rainbow-manshu-banner > * { position: relative; z-index: 1; }
-.rainbow-manshu-banner .eyebrow { margin: 0 0 4px; color: rgba(255,255,255,.82); }
-.rainbow-manshu-banner strong { display: block; font-size: 22px; letter-spacing: -.03em; }
-.rainbow-manshu-banner span { display: block; margin-top: 3px; font-size: 11px; font-weight: 800; }
+.rainbow-manshu-banner .eyebrow { margin: 0 0 3px; color: rgba(255,255,255,.82); font-size: 8px; }
+.rainbow-manshu-banner strong { display: block; font-size: 16px; letter-spacing: -.03em; }
+.rainbow-manshu-banner span { display: block; margin-top: 2px; font-size: 10px; font-weight: 800; }
 .manshu-list { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 48%; }
 .manshu-list b { padding: 5px 7px; border-radius: 999px; background: rgba(255,255,255,.22); font-size: 9px; white-space: nowrap; }
 @keyframes rainbow-flow {
@@ -735,6 +735,18 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
 }
 
 /* CRO改修: 事例確認後の次アクションをカード化 */
+.guide-teaser {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 12px;
+  padding: 16px 18px;
+  border-color: #dce9f6;
+  background: linear-gradient(135deg, #fff, #f7fbff);
+}
+.guide-teaser h2 { margin: 0; font-size: 15px; letter-spacing: -.02em; }
+.guide-teaser p:not(.eyebrow) { margin: 7px 0 0; color: #65778a; font-size: 10px; line-height: 1.7; }
 .cta-card {
   display: flex;
   align-items: center;
@@ -780,6 +792,42 @@ main { grid-column: 2; min-width: 0; padding: 0 34px 28px; }
   font-size: 10px;
   line-height: 1.65;
 }
+
+/* SEO/CRO改修: トップから移した説明コンテンツ用の独立ガイドページ */
+.guide-page {
+  width: min(920px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 32px 0 48px;
+}
+.guide-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+  color: #0877f9;
+  font-size: 11px;
+  font-weight: 900;
+  text-decoration: none;
+}
+.guide-hero {
+  padding: 28px;
+  background:
+    radial-gradient(circle at 88% 20%, rgba(8,119,249,.12), transparent 28%),
+    linear-gradient(135deg, #fff, #f3f9ff);
+}
+.guide-hero h1 { margin: 0; font-size: clamp(28px, 5vw, 46px); letter-spacing: -.05em; }
+.guide-hero p:not(.eyebrow) { max-width: 720px; margin: 14px 0 0; color: #607286; font-size: 13px; line-height: 1.85; }
+.guide-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.guide-section { margin-top: 16px; padding: 24px; }
+.guide-section h2 { margin: 0 0 12px; font-size: 22px; letter-spacing: -.03em; }
+.guide-section p, .guide-section li { color: #607286; font-size: 12px; line-height: 1.9; }
+.guide-section ol { display: grid; gap: 8px; margin: 0; padding-left: 1.3em; }
+.guide-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+.guide-grid article { padding: 14px; border: 1px solid #e0e8f0; border-radius: 12px; background: #fbfdff; }
+.guide-grid small { color: #8292a4; font-size: 8px; font-weight: 900; letter-spacing: .12em; }
+.guide-grid strong { display: block; margin-top: 6px; font-size: 15px; }
+.guide-grid p { margin: 7px 0 0; font-size: 10px; line-height: 1.7; }
+.guide-warning { border-color: #ffd8aa; background: linear-gradient(135deg, #fffaf2, #fff); }
 .korogashi-game { margin-top: 18px; padding: 22px 24px; background: linear-gradient(135deg, #fff, #f7fbff 58%, #fff8ed); }
 .korogashi-game .card-heading > span { padding: 7px 10px; border-radius: 999px; color: #0877f9; background: #eaf4ff; font-size: 10px; font-weight: 900; white-space: nowrap; }
 .korogashi-game .card-heading > span.buy { color: #0a9a70; background: #e6f8f1; }
@@ -942,6 +990,8 @@ footer { display: flex; justify-content: space-between; padding: 22px 3px 0; col
   .performance-race-list { grid-template-columns: 1fr; }
   .strategy-profit-grid { grid-template-columns: 1fr; }
   .result-board-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .guide-teaser { align-items: flex-start; flex-direction: column; }
+  .guide-grid { grid-template-columns: 1fr; }
   .cta-card { align-items: flex-start; flex-direction: column; }
   .contact-grid { grid-template-columns: 1fr; }
   .korogashi-main { grid-template-columns: 1fr; }
@@ -998,6 +1048,9 @@ footer { display: flex; justify-content: space-between; padding: 22px 3px 0; col
   .plan-actions { display: grid; }
   .demo-notice { align-items: flex-start; line-height: 1.5; }
   .main-prediction, .racer-card, .value-card, .ranking-card, .performance-card { padding: 19px 15px; }
+  .guide-page { width: min(100% - 24px, 920px); padding-top: 20px; }
+  .guide-hero, .guide-section { padding: 18px 16px; }
+  .guide-actions { display: grid; }
   .result-board-summary { grid-template-columns: 1fr; }
   .result-card { padding: 19px 15px; }
   .official-card { padding: 19px 15px; }

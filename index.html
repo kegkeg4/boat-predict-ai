@@ -93,7 +93,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260715-cro-seo">
+  <link rel="stylesheet" href="styles.css?v=20260715-guide-page">
   <!-- CRO/SEO改修: ?v= バージョン文字列更新 -->
 </head>
 <body>
@@ -113,6 +113,10 @@
         <a class="nav-item active" href="#">
           <span class="nav-icon">⌁</span>
           AI予測
+        </a>
+        <a class="nav-item" href="guide.html">
+          <span class="nav-icon">?</span>
+          使い方
         </a>
         <a class="nav-item" href="#history">
           <span class="nav-icon">◷</span>
@@ -193,63 +197,17 @@
       <div class="cta-strip" aria-label="主要アクション">
         <a class="cta-primary" href="#predictButton">本日の競艇予測を確認する</a>
         <a class="cta-secondary" href="#resultBoard">予測結果の集計を見る</a>
-        <a class="cta-secondary" href="#contact">問い合わせる</a>
+        <a class="cta-secondary" href="guide.html">予測の仕組みを見る</a>
       </div>
 
-      <!-- SEO改修: コンテンツ追加ブロック1 - サービス概要説明 -->
-      <section class="card">
-        <h2>AIボートレース予測とは</h2>
-        <!-- SEO改修: H2統合 - 概要系H2をこのセクションに統合 -->
-        <h3>このサービスでできること</h3>
-        <p>
-          全国24か所の競艇場で行われるレースの出走表・オッズ・公式結果を自動で取得し、
-          AIが整理・表示します。予測は参考情報として提供しており、
-          的中率・回収率の実績データを自動集計して公開しています。
-          「どの予測が当たって、どれが外れたか」を透明に確認できることが、
-          このサービスの特徴です。
-        </p>
-      </section>
-
-      <!-- SEO改修: コンテンツ追加ブロック1 - 予測の仕組み説明 -->
-      <section class="card">
-        <h2>予測の仕組みと集計方法</h2>
-        <!-- SEO改修: H2統合 - AI・技術系H2をこのセクションに統合 -->
-        <h3>予測はどのように作られるか</h3>
-        <p>
-          出走選手の級別・全国勝率・当地勝率・モーターの性能・スタートタイミング・
-          展示タイムなど、公式サイトで公開されているデータをAIが自動収集し、
-          本命・狙い目・穴の3つの視点で買い目候補を自動生成します。
-          予測はあくまで参考情報であり、的中を保証するものではありません。
-          実際の的中率・回収率の実績は結果ボードで随時公開しています。
-        </p>
-
-        <h3>競艇場ごとの特徴</h3>
-        <p>
-          全国24か所の競艇場はそれぞれ水面の広さ・潮の満ち引き・風向きの傾向が異なります。
-          淡水の河川コース（江戸川・戸田）はうねりが生じやすく波乱が起きやすい一方、
-          大村・徳山などは1コースの1着率が高く堅い傾向があります。
-          各競艇場のページでは、その場ならではの傾向と予測実績を確認できます。
-        </p>
-      </section>
-
-      <!-- SEO改修: コンテンツ追加ブロック2 - 使い方説明 -->
-      <section class="card">
-        <h2>ご利用方法</h2>
-        <!-- SEO改修: H2統合 - 使い方系H2をこのセクションに統合 -->
-        <h3>初めての方へ：基本的な使い方</h3>
-        <ol>
-          <li>画面上部で開催場と日付を選択する</li>
-          <li>レース一覧から確認したいレースを選ぶ</li>
-          <li>AIが自動生成した本命・狙い目・穴の買い目候補を参考にする</li>
-          <li>レース後、結果ボードで的中率・当選本数を確認する</li>
-        </ol>
-        <p>
-          登録・ログイン不要で全機能を無料でご利用いただけます。
-          予測はAIが自動生成する参考情報です。
-          舟券の購入・払戻はこのサービスでは行えません。
-          公営競技の舟券購入は公式サイト（BOAT RACE オフィシャルウェブサイト）または
-          場外発売所で行ってください。
-        </p>
+      <!-- CRO/SEO改修: 長い説明はguide.htmlへ移し、トップは予測操作を優先 -->
+      <section class="card guide-teaser">
+        <div>
+          <p class="eyebrow">FIRST TIME GUIDE</p>
+          <h2>AI予測の仕組み・使い方は別ページで確認できます</h2>
+          <p>トップは予測操作を優先し、サービス説明・競艇場ごとの特徴・結果集計の見方はガイドページにまとめました。</p>
+        </div>
+        <a class="cta-secondary" href="guide.html">ガイドを見る</a>
       </section>
 
       <section id="loadingState" class="loading-state" hidden>
@@ -721,7 +679,7 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260715-cro-seo"></script>
+  <script src="app.js?v=20260715-guide-page"></script>
   <!-- CRO/SEO改修: ?v= バージョン文字列更新 -->
   <!-- SEO改修: FAQPage構造化データ追加 - リッチリザルト獲得のため -->
   <script type="application/ld+json">

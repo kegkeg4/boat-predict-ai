@@ -1395,7 +1395,10 @@ def build_sitemap_xml(origin, max_days=60):
     if SEO_SITEMAP_CACHE["body"] and now - SEO_SITEMAP_CACHE["savedAt"] < 600:
         return SEO_SITEMAP_CACHE["body"]
     events = seo_latest_events()
-    rows = []
+    rows = [
+        (f"{origin}/", datetime.now(JST).strftime("%Y-%m-%d")),
+        (f"{origin}/guide.html", datetime.now(JST).strftime("%Y-%m-%d")),
+    ]
     day_keys = set()
     venue_slugs = set()
     cutoff = datetime.now(JST).date() - timedelta(days=max_days)
