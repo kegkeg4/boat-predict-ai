@@ -543,7 +543,7 @@ async function loadLearningWeights() {
 async function postLearningEvents(events) {
   // Public browsers keep a local audit log only. Shared learning data is
   // produced by authenticated server-side jobs so visitors cannot poison it.
-  return { events: Array.isArray(events) ? events.length : 0 };
+  return { events: 0, localEvents: Array.isArray(events) ? events.length : 0 };
 }
 
 function setPlanMode(mode) {
@@ -1628,7 +1628,7 @@ function renderRace(data) {
   raceTypeBadge.className = `race-type-badge ${raceType.key}`;
   raceTypeBadge.textContent = raceType.label;
   document.querySelector("#raceTypeDescription").textContent = raceType.text;
-  const currentTendency = buildRaceRanking(data).find((item) => item.race === selectedRace)
+  const currentTendency = buildRaceTendency(data, selectedRace)
     || { solid: 50, upset: 50 };
   document.querySelector("#currentSolidScore").textContent = Math.round(currentTendency.solid);
   document.querySelector("#currentUpsetScore").textContent = Math.round(currentTendency.upset);
@@ -2398,7 +2398,7 @@ function buildBetDecision(data, groups = buildTicketStrategyGroups(data), race =
   const positiveCount = picks.filter((pick) => pick.valueScore >= 100 && pick.estimatedOdds >= 7).length;
   const laneOne = data.racers.find((racer) => racer.boat === 1);
   const leaderGap = data.ranking[0].probability - data.ranking[1].probability;
-  const tendency = buildRaceRanking(data).find((item) => item.race === race) || { solid: 50, upset: 50 };
+  const tendency = buildRaceTendency(data, race) || { solid: 50, upset: 50 };
   const waterRisk = (Number.isFinite(data.wind) ? data.wind : 0) + (Number.isFinite(data.wave) ? data.wave * .7 : 0);
   const roughVenue = (data.venueProfile?.upsetBonus || 0) >= 8
     || (Number.isFinite(data.wind) && data.wind >= 6)
@@ -2463,38 +2463,41 @@ function renderValuePicks(data) {
   ` : "");
 }
 
+function buildRaceTendency(raceData, race) {
+  if (!raceData?.ranking?.length) return null;
+  const profile = raceData.venueProfile || getVenueCourseProfile(raceData.venue);
+  const laneOne = raceData.racers.find((racer) => racer.boat === 1);
+  const leaderGap = Math.max(
+    0,
+    Number(raceData.ranking[0]?.probability || 0) - Number(raceData.ranking[1]?.probability || 0)
+  );
+  const wind = Number.isFinite(raceData.wind) ? raceData.wind : 0;
+  const wave = Number.isFinite(raceData.wave) ? raceData.wave : 0;
+  const waterRisk = wind * 1.2 + wave * .45;
+  const solid = clamp(
+    Number(laneOne?.probability || 0) * 1.55
+      + leaderGap * 1.1
+      + (profile.innerBoost || 0) * 2.4
+      - (profile.innerPenalty || 0) * 2.8
+      - waterRisk
+      + 17,
+    10,
+    95
+  );
+  const upset = clamp(
+    100 - solid
+      + (profile.upsetBonus || 0) * 1.4
+      + waterRisk * .75,
+    10,
+    95
+  );
+  return { race, solid, upset };
+}
+
 function buildRaceRanking(data) {
   return Array.from({ length: 12 }, (_, index) => {
     const race = index + 1;
-    const raceData = race === selectedRace ? data : buildRaceData(race);
-    if (!raceData?.ranking?.length) return null;
-    const profile = raceData.venueProfile || getVenueCourseProfile(raceData.venue);
-    const laneOne = raceData.racers.find((racer) => racer.boat === 1);
-    const leaderGap = Math.max(
-      0,
-      Number(raceData.ranking[0]?.probability || 0) - Number(raceData.ranking[1]?.probability || 0)
-    );
-    const wind = Number.isFinite(raceData.wind) ? raceData.wind : 0;
-    const wave = Number.isFinite(raceData.wave) ? raceData.wave : 0;
-    const waterRisk = wind * 1.2 + wave * .45;
-    const solid = clamp(
-      Number(laneOne?.probability || 0) * 1.55
-        + leaderGap * 1.1
-        + (profile.innerBoost || 0) * 2.4
-        - (profile.innerPenalty || 0) * 2.8
-        - waterRisk
-        + 17,
-      10,
-      95
-    );
-    const upset = clamp(
-      100 - solid
-        + (profile.upsetBonus || 0) * 1.4
-        + waterRisk * .75,
-      10,
-      95
-    );
-    return { race, solid, upset };
+    return buildRaceTendency(race === selectedRace ? data : buildRaceData(race), race);
   }).filter(Boolean);
 }
 
