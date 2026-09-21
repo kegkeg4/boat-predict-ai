@@ -14,6 +14,7 @@ import socket
 from itertools import permutations
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from html.parser import HTMLParser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,6 +40,9 @@ PAST_RESULT_CACHE_SECONDS = int(os.environ.get("BOAT_PAST_RESULT_CACHE_SECONDS",
 FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_FETCH_TIMEOUT", "6"))
 PROGRAM_INDEX_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PROGRAM_INDEX_TIMEOUT", "7"))
 DETAIL_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_DETAIL_FETCH_TIMEOUT", "3"))
+PROGRAM_REFRESH_TIMEOUT_SECONDS = max(1, min(30, float(os.environ.get("BOAT_PROGRAM_REFRESH_TIMEOUT", "18"))))
+PROGRAM_REFRESH_WORKERS = max(1, min(4, int(os.environ.get("BOAT_PROGRAM_REFRESH_WORKERS", "2"))))
+PROGRAM_REFRESH_RETRY_SECONDS = 60
 PAY_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_PAY_FETCH_TIMEOUT", "14"))
 BEFOREINFO_FETCH_TIMEOUT_SECONDS = float(os.environ.get("BOAT_BEFOREINFO_FETCH_TIMEOUT", "12"))
 CACHE_FLUSH_INTERVAL_SECONDS = int(os.environ.get("BOAT_CACHE_FLUSH_INTERVAL", "30"))
@@ -129,6 +133,9 @@ fetch_locks = {}
 fetch_lock_access = {}
 fetch_locks_guard = threading.Lock()
 program_cache_lock = threading.Lock()
+program_refresh_lock = threading.Lock()
+program_refresh_jobs = {}
+program_refresh_slots = threading.BoundedSemaphore(PROGRAM_REFRESH_WORKERS)
 venue_status_cache_lock = threading.Lock()
 venue_status_cache = {}
 results_cache_lock = threading.Lock()
@@ -3957,11 +3964,23 @@ def remember_memory_cached_html(path, text, cache_seconds):
                 cache.pop(key, None)
 
 
+@contextmanager
+def fetch_lock_with_timeout(path, timeout):
+    lock = get_fetch_lock(path)
+    if not lock.acquire(timeout=max(0, timeout)):
+        raise TimeoutError("official fetch is already in progress")
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def fetch_html(path, cache_seconds=CACHE_SECONDS, timeout=FETCH_TIMEOUT_SECONDS):
     cached = get_memory_cached_html(path, cache_seconds)
     if cached:
         return cached
-    with get_fetch_lock(path):
+    deadline = time.monotonic() + timeout
+    with fetch_lock_with_timeout(path, timeout):
         cached = get_memory_cached_html(path, cache_seconds)
         if cached:
             return cached
@@ -3975,7 +3994,7 @@ def fetch_html(path, cache_seconds=CACHE_SECONDS, timeout=FETCH_TIMEOUT_SECONDS)
                 return stale_text
         request = Request(f"{OFFICIAL_BASE}{path}", headers=OFFICIAL_HEADERS)
         try:
-            with urlopen(request, timeout=timeout) as response:
+            with urlopen(request, timeout=max(0.1, deadline - time.monotonic())) as response:
                 text = response.read().decode("utf-8", errors="replace")
         except Exception:
             if stale_text and cache_seconds > 0:
@@ -4765,7 +4784,121 @@ def load_signals(date, jcd, race, timeout=FETCH_TIMEOUT_SECONDS, fast=False):
     return fetch_signals_live(date, jcd, race, timeout=timeout)
 
 
-def load_program(date, jcd, selected_race, should_prefetch=True, fast=False):
+def program_race(payload, race_number):
+    return next((race for race in (payload or {}).get("races", [])
+                 if race.get("race") == race_number and len(race.get("racers", [])) == 6), None)
+
+
+def store_program_payload(date, jcd, races):
+    # Merge by race so a detail-only fallback cannot erase the other eleven races.
+    with program_cache_lock:
+        previous = program_cache.get(f"{date}-{jcd}", {}).get("payload") or {}
+        merged = {race["race"]: race for race in previous.get("races", [])}
+        for race in races:
+            old = merged.get(race["race"], {})
+            if race.get("detailed") or not old.get("detailed"):
+                merged[race["race"]] = race
+        payload = {"date": date, "jcd": jcd, "available": bool(merged),
+                   "races": [merged[number] for number in sorted(merged)]}
+        program_cache[f"{date}-{jcd}"] = {"savedAt": time.time(), "payload": payload}
+        prune_saved_at_mapping(program_cache, PROGRAM_CACHE_MAX_ENTRIES)
+    save_program_cache()
+    return attach_program_profile_fields(payload)
+
+
+def parse_detail_program(html_text, race_number):
+    racers = parse_racelist(html_text)
+    if len(racers) != 6:
+        return None
+    parser = TableParser()
+    parser.feed(html_text)
+    for row in parser.rows:
+        cells = row["cells"]
+        if cells and "締切予定時刻" in cells[0]["text"] and len(cells) > race_number:
+            cutoff = cells[race_number]["text"]
+            if re.fullmatch(r"\d{2}:\d{2}", cutoff):
+                return {"race": race_number, "cutoff": cutoff, "racers": racers, "detailed": True}
+    return None
+
+
+def refresh_program_reserved(date, jcd, race):
+    key = f"{date}-{jcd}-{race}"
+    started = time.monotonic()
+    status = "failed"
+    mark_worker_start("program_refresh")
+    try:
+        payload = load_program(date, jcd, race, should_prefetch=False,
+                               fetch_timeout=PROGRAM_REFRESH_TIMEOUT_SECONDS)
+        selected = program_race(payload, race)
+        status = "ready" if selected and selected.get("detailed") else "unpublished" if not payload.get("available") else "partial"
+        print(f"[program-fetch] {key} status={status} seconds={time.monotonic() - started:.2f}", flush=True)
+    except Exception as error:
+        status = "failed"
+        print(f"[program-fetch] {key} status=failed seconds={time.monotonic() - started:.2f} error={error}", flush=True)
+    finally:
+        with program_refresh_lock:
+            program_refresh_jobs[key] = {"status": status, "updatedAt": time.time()}
+        program_refresh_slots.release()
+        mark_worker_end("program_refresh")
+
+
+def schedule_program_refresh(date, jcd, race):
+    key = f"{date}-{jcd}-{race}"
+    now = time.time()
+    with program_refresh_lock:
+        # Keep retry state bounded without evicting active work.
+        for old_key, job in list(program_refresh_jobs.items()):
+            if job["status"] != "fetching" and now - job["updatedAt"] >= PROGRAM_REFRESH_RETRY_SECONDS:
+                del program_refresh_jobs[old_key]
+        if len(program_refresh_jobs) >= 256:
+            completed = [key for key, job in program_refresh_jobs.items() if job["status"] != "fetching"]
+            for old_key in sorted(completed, key=lambda key: program_refresh_jobs[key]["updatedAt"])[:len(program_refresh_jobs) - 255]:
+                del program_refresh_jobs[old_key]
+        job = program_refresh_jobs.get(key)
+        if job and (job["status"] == "fetching" or job["status"] != "ready"):
+            return dict(job)
+        if not program_refresh_slots.acquire(blocking=False):
+            return {"status": "busy", "updatedAt": now}
+        job = {"status": "fetching", "updatedAt": now}
+        program_refresh_jobs[key] = job
+        try:
+            threading.Thread(target=refresh_program_reserved, args=(date, jcd, race), daemon=True).start()
+        except Exception:
+            program_refresh_jobs.pop(key, None)
+            program_refresh_slots.release()
+            raise
+        return dict(job)
+
+
+def load_program_response(date, jcd, race, fast=False):
+    # The HTTP thread never waits for the official site. All upstream work is bounded.
+    with program_cache_lock:
+        stored = program_cache.get(f"{date}-{jcd}") or {}
+        cached = stored.get("payload") or {}
+        age = time.time() - stored.get("savedAt", 0)
+        selected = program_race(cached, race)
+        fresh = age < get_program_cache_seconds(date, cached)
+        payload = {**cached, "races": [{**item, "racers": [dict(r) for r in item.get("racers", [])]}
+                                      for item in cached.get("races", [])]}
+    if selected and selected.get("detailed") and fresh:
+        return {**attach_program_profile_fields(payload), "status": "ready", "refreshing": False}, 200
+    job = schedule_program_refresh(date, jcd, race)
+    status = job["status"]
+    pending = status in ("fetching", "busy")
+    retry_after = 2 if status == "fetching" else 4 if status == "busy" else max(1, int(PROGRAM_REFRESH_RETRY_SECONDS - (time.time() - job["updatedAt"])))
+    payload.update(date=date, jcd=jcd, available=bool(selected), status=status,
+                   refreshing=pending, retryAfter=retry_after, stale=bool(selected and not fresh))
+    if selected:
+        return attach_program_profile_fields(payload), 200
+    if pending:
+        return payload, 202
+    if status == "unpublished":
+        return payload, 200
+    payload["error"] = "公式サイトから出走表を取得できませんでした。時間をおいて再試行してください。"
+    return payload, 503
+
+
+def load_program(date, jcd, selected_race, should_prefetch=True, fast=False, fetch_timeout=None):
     program_key = f"{date}-{jcd}"
     recent_payload = None
     stale_payload = None
@@ -4805,19 +4938,24 @@ def load_program(date, jcd, selected_race, should_prefetch=True, fast=False):
         f"/owpc/pc/race/racelist?rno={selected_race}"
         f"&jcd={jcd}&hd={compact_date}"
     )
-    if fast and recent_payload and recent_payload.get("races"):
+    if fast and program_race(recent_payload, selected_race):
         if should_prefetch:
             schedule_program_prefetch(date, jcd)
         return attach_program_profile_fields(recent_payload)
+    index_timeout = fetch_timeout or PROGRAM_INDEX_TIMEOUT_SECONDS
+    detail_timeout = fetch_timeout or DETAIL_FETCH_TIMEOUT_SECONDS
+    index_error = None
+    detail_error = None
     if recent_payload and recent_payload.get("races"):
         races = [dict(race) for race in recent_payload["races"]]
         try:
-            detail_html = fetch_html(detail_path, timeout=DETAIL_FETCH_TIMEOUT_SECONDS)
-        except Exception:
+            detail_html = fetch_html(detail_path, timeout=detail_timeout)
+        except Exception as error:
+            detail_error = error
             detail_html = ""
     elif fast:
         try:
-            index_html = fetch_html(index_path, CACHE_SECONDS, PROGRAM_INDEX_TIMEOUT_SECONDS)
+            index_html = fetch_html(index_path, CACHE_SECONDS, index_timeout)
         except Exception:
             if stale_payload and stale_payload.get("available"):
                 if should_prefetch:
@@ -4828,22 +4966,33 @@ def load_program(date, jcd, selected_race, should_prefetch=True, fast=False):
         detail_html = ""
     else:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            index_future = executor.submit(fetch_html, index_path, CACHE_SECONDS, PROGRAM_INDEX_TIMEOUT_SECONDS)
-            detail_future = executor.submit(fetch_html, detail_path, CACHE_SECONDS, DETAIL_FETCH_TIMEOUT_SECONDS)
+            index_future = executor.submit(fetch_html, index_path, CACHE_SECONDS, index_timeout)
+            detail_future = executor.submit(fetch_html, detail_path, CACHE_SECONDS, detail_timeout)
             try:
-                index_html = index_future.result(timeout=PROGRAM_INDEX_TIMEOUT_SECONDS + 1)
-            except Exception:
-                if stale_payload and stale_payload.get("available"):
-                    return attach_program_profile_fields(stale_payload)
-                raise
+                index_html = index_future.result()
+            except Exception as error:
+                index_error = error
+                index_html = ""
             try:
-                detail_html = detail_future.result(timeout=DETAIL_FETCH_TIMEOUT_SECONDS + 1)
-            except Exception:
+                detail_html = detail_future.result()
+            except Exception as error:
+                detail_error = error
                 detail_html = ""
         races = parse_race_index(index_html)
+    detail_race = parse_detail_program(detail_html, selected_race) if detail_html else None
+    if fetch_timeout is not None and recent_payload and detail_error:
+        # Failed revalidation must not make stale statistics look newly fetched.
+        raise detail_error
+    if detail_race and not program_race({"races": races}, selected_race):
+        races.append(detail_race)
     if not races:
         if stale_payload and stale_payload.get("available"):
             return attach_program_profile_fields(stale_payload)
+        if index_error or detail_error:
+            raise index_error or detail_error
+        # Do not cache a broken/challenge page as a genuinely unpublished race.
+        if not fast and not any(text in (index_html + detail_html) for text in ("データがありません", "データはありません", "情報はありません", "開催されていません")):
+            raise ValueError("official program markup could not be parsed")
         payload = {"date": date, "jcd": jcd, "available": False, "races": []}
         if date > current_jst_date():
             with program_cache_lock:
@@ -4865,29 +5014,7 @@ def load_program(date, jcd, selected_race, should_prefetch=True, fast=False):
             selected["detailed"] = True
     for race in races:
         race.setdefault("detailed", False)
-    payload = {
-        "date": date,
-        "jcd": jcd,
-        "available": True,
-        "races": races,
-    }
-    with program_cache_lock:
-        previous = program_cache.get(program_key, {}).get("payload")
-        if previous:
-            previous_details = {
-                race["race"]: race
-                for race in previous.get("races", [])
-                if race.get("detailed")
-            }
-            for index, race in enumerate(payload["races"]):
-                if not race.get("detailed") and race["race"] in previous_details:
-                    payload["races"][index] = previous_details[race["race"]]
-        program_cache[program_key] = {
-            "savedAt": time.time(),
-            "payload": payload,
-        }
-        prune_saved_at_mapping(program_cache, PROGRAM_CACHE_MAX_ENTRIES)
-    save_program_cache()
+    payload = store_program_payload(date, jcd, races)
     if should_prefetch:
         schedule_program_prefetch(date, jcd)
     return attach_program_profile_fields(payload)
@@ -5512,7 +5639,8 @@ class AppHandler(SimpleHTTPRequestHandler):
                 self.send_json(load_signals(date, jcd, int(race), fast=fast))
             else:
                 fast = query.get("fast", ["0"])[0] == "1"
-                self.send_json(load_program(date, jcd, int(race), fast=fast))
+                payload, status = load_program_response(date, jcd, int(race), fast=fast)
+                self.send_json(payload, status)
         except Exception as error:
             self.send_json({"error": str(error)}, 502)
 

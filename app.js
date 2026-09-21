@@ -111,6 +111,7 @@ const RESULT_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
 const PERFORMANCE_BET_UNIT_YEN = 100;
 const RESULT_UNAVAILABLE_CACHE_MS = 3 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 13000;
+const PROGRAM_READY_WAIT_MS = 45000;
 const MAIN_PROGRAM_TIMEOUT_MS = 12000;
 const BACKGROUND_PROGRAM_TIMEOUT_MS = 9000;
 const SIGNAL_TIMEOUT_MS = 7000;
@@ -741,6 +742,47 @@ async function loadOfficialProgram(signal) {
   return loadOfficialProgramForRace(selectedRace, signal, MAIN_PROGRAM_TIMEOUT_MS);
 }
 
+function waitForProgramRetry(delay, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException("Aborted", "AbortError"));
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delay);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function fetchProgramUntilReady(url, { signal, timeoutMs, forceDetail, race }) {
+  const deadline = Date.now() + PROGRAM_READY_WAIT_MS;
+  let polls = 0;
+  while (Date.now() < deadline) {
+    const response = await fetchWithTimeout(url, {
+      signal, timeoutMs: Math.min(timeoutMs, deadline - Date.now())
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.error) {
+      const error = new Error(payload.error || `公式データ取得エラー: ${response.status}`);
+      error.name = response.status === 503 ? "ProgramUnavailableError" : "Error";
+      throw error;
+    }
+    const selected = payload.races?.find((item) => item.race === race && item.racers?.length === 6);
+    const waiting = response.status === 202 || payload.refreshing;
+    if (selected && (!forceDetail || selected.detailed || !waiting)) return payload;
+    if (!waiting) return payload;
+    // Poll only while this selection needs data; never leave a perpetual page timer.
+    const delay = Math.min(5000, Math.max(2000 + polls++ * 500, Number(payload.retryAfter || 2) * 1000));
+    await waitForProgramRetry(Math.min(delay, Math.max(0, deadline - Date.now())), signal);
+  }
+  const error = new Error("公式出走表の取得が混み合っています。保存でき次第、次の表示に反映されます。");
+  error.name = "ProgramPendingError";
+  throw error;
+}
+
 async function loadOfficialProgramForRace(race, signal, timeoutMs = REQUEST_TIMEOUT_MS, forceDetail = false) {
   const key = getProgramKey();
   const cached = dynamicPrograms[key];
@@ -751,14 +793,12 @@ async function loadOfficialProgramForRace(race, signal, timeoutMs = REQUEST_TIME
   const fast = forceDetail ? "0" : "1";
   let program;
   try {
-    const response = await fetchWithTimeout(
+    program = await fetchProgramUntilReady(
       `/api/program?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}&race=${race}&fast=${fast}`,
-      { signal, timeoutMs }
+      { signal, timeoutMs, forceDetail, race }
     );
-    if (!response.ok) throw new Error(`公式データ取得エラー: ${response.status}`);
-    program = await response.json();
-    if (program.error) throw new Error(program.error);
   } catch (error) {
+    if (error.name === "AbortError") throw error;
     if (cachedRace && Array.isArray(cachedRace.racers) && cachedRace.racers.length >= 6) {
       return cached;
     }
@@ -3352,13 +3392,19 @@ async function runPrediction(withLoading = true) {
       programLoadError = error;
       console.warn(error);
       document.querySelector("#unavailableState strong").textContent =
-        error.name === "TimeoutError"
+        error.name === "ProgramPendingError"
+          ? "出走表の取得に時間がかかっています"
+          : error.name === "ProgramUnavailableError"
+          ? "公式サイトから出走表を取得できていません"
+          : error.name === "TimeoutError"
           ? "公式データ取得がタイムアウトしました"
           : error instanceof TypeError
           ? "取得サーバーに接続できません"
           : "公式出走表の取得に失敗しました";
       document.querySelector("#unavailableState p").textContent =
-        error.name === "TimeoutError"
+        error.name === "ProgramPendingError" || error.name === "ProgramUnavailableError"
+          ? `${error.message} 「AI予測を実行」で再確認できます。`
+          : error.name === "TimeoutError"
           ? "公式サイトまたは取得サーバーの応答が遅いため、一定時間で打ち切りました。少し待って再実行してください。"
           : error instanceof TypeError
           ? "ローカル取得サーバーが停止している可能性があります。サーバー起動後に画面を再読み込みしてください。"
