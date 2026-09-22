@@ -3318,10 +3318,6 @@ async function warmMissingPerformancePrograms(requestId, allRaces) {
 function scheduleDailyPerformanceRefresh(requestId) {
   renderDailyPerformance({ renderList: false });
   schedulePerformanceRender({ renderList: true });
-  if (!isPremiumMode) {
-    schedulePerformanceDataSync(requestId);
-    return;
-  }
   clearTimeout(performanceRefreshTimer);
   performanceRefreshTimer = setTimeout(() => {
     if (requestId === predictionRequestId) {
@@ -3347,15 +3343,8 @@ async function refreshProgramDetails(requestId, race = selectedRace) {
 
 function schedulePostPredictionFetches(data, requestId) {
   refreshProgramDetails(requestId, selectedRace);
-  if (isPremiumMode) {
-    scheduleDailyPerformanceRefresh(requestId);
-  } else {
-    refreshOfficialResult(data, requestId).finally(() => {
-      if (requestId === predictionRequestId) {
-        scheduleDailyPerformanceRefresh(requestId);
-      }
-    });
-  }
+  // The saved-results batch updates both the selected race and all race buttons.
+  scheduleDailyPerformanceRefresh(requestId);
   setTimeout(() => {
     if (requestId !== predictionRequestId) return;
     refreshRaceSignals(data, requestId);
