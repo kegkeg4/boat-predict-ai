@@ -20,6 +20,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
+from race_archive import RaceArchive, AcquisitionQueue
 
 
 OFFICIAL_BASE = "https://www.boatrace.jp"
@@ -97,6 +98,11 @@ LONG_BACKFILL_WINDOW_START_HOUR = int(os.environ.get("BOAT_LONG_BACKFILL_WINDOW_
 LONG_BACKFILL_WINDOW_END_HOUR = int(os.environ.get("BOAT_LONG_BACKFILL_WINDOW_END", "6"))
 RACER_HISTORY_MAX_ENTRIES = int(os.environ.get("BOAT_RACER_HISTORY_MAX_ENTRIES", "120000"))
 CACHE_DIR = Path(os.environ.get("BOAT_DATA_DIR", Path(__file__).with_name(".official-cache")))
+RACE_ARCHIVE = RaceArchive(CACHE_DIR / "races.sqlite3")
+ACQUISITION_ENABLED = os.environ.get("BOAT_ACQUISITION_WORKER", "1") != "0"
+ACQUISITION_NIGHT_START = 0
+ACQUISITION_NIGHT_END = 6
+acquisition_queue = AcquisitionQueue()
 PROGRAM_CACHE_FILE = CACHE_DIR / "programs.json"
 SCHEDULE_CACHE_FILE = CACHE_DIR / "schedules.json"
 RESULTS_CACHE_FILE = CACHE_DIR / "results.json"
@@ -252,6 +258,10 @@ def runtime_sizes_snapshot():
         racer_history_size = RACER_HISTORY_FILE.stat().st_size
     except OSError:
         racer_history_size = 0
+    try:
+        archive_size = RACE_ARCHIVE.path.stat().st_size
+    except OSError:
+        archive_size = 0
     with cache_lock:
         html_memory_entries = len(cache)
     with fetch_locks_guard:
@@ -270,6 +280,7 @@ def runtime_sizes_snapshot():
         "rssMb": current_rss_mb(),
         "learningMb": round(learning_size / (1024 * 1024), 2),
         "racerHistoryMb": round(racer_history_size / (1024 * 1024), 2),
+        "raceArchiveMb": round(archive_size / (1024 * 1024), 2),
         "htmlMemory": html_memory_entries,
         "fetchLocks": fetch_lock_entries,
         "programCache": program_entries,
@@ -348,6 +359,10 @@ def save_learning_store(store):
     temporary = LEARNING_FILE.with_suffix(".tmp")
     temporary.write_text(json.dumps(store, ensure_ascii=False), encoding="utf-8")
     temporary.replace(LEARNING_FILE)
+    RACE_ARCHIVE.set_meta("learning-summary", {
+        "updatedAt": store.get("updatedAt"), "weights": store.get("weights", {}),
+        "events": len(store.get("events") or {}),
+    })
     try:
         stat = LEARNING_FILE.stat()
         mtime = stat.st_mtime_ns
@@ -458,12 +473,8 @@ def recompute_learning_weights(events):
 
 
 def get_learning():
-    with learning_lock:
-        store = read_learning_store()
-    return {
-        "updatedAt": store.get("updatedAt"),
-        "weights": store.get("weights", {}),
-        "events": len(store.get("events", {})),
+    return RACE_ARCHIVE.get_meta("learning-summary") or {
+        "updatedAt": None, "weights": {}, "events": 0, "refreshing": True,
     }
 
 
@@ -576,6 +587,7 @@ def record_learning_events(events):
             store["weights"] = recompute_learning_weights(stored_events)
             store["updatedAt"] = datetime.now(JST).isoformat(timespec="seconds")
             save_learning_store(store)
+            archive_learning_events(changed_events)
     if changed_events:
         record_racer_history_from_events(changed_events)
         schedule_racer_profile_rebuild(f"learning:{len(changed_events)}")
@@ -757,22 +769,17 @@ def result_board_strategy_templates():
 
 
 def build_result_board(date, jcd):
+    stored = RACE_ARCHIVE.get_board(date, jcd)
+    if stored and stored.get("payload"):
+        return {**stored["payload"], "refreshing": stored["refreshing"], "savedAt": stored["savedAt"]}
+    acquisition_queue.submit(("board", date, jcd, 0), priority=0, interval=5)
+    return {"date": date, "jcd": jcd, "races": [], "refreshing": True,
+            "status": "preparing", "note": "保存済みデータを集計しています。"}
+
+
+def compute_result_board(date, jcd, events_by_race, official_results):
     venue_index = int(jcd) - 1
     venue = VENUE_NAMES[venue_index] if 0 <= venue_index < len(VENUE_NAMES) else jcd
-    cache_key = f"{date}-{jcd}"
-    now = time.time()
-    with result_board_cache_lock:
-        cached = result_board_cache.get(cache_key)
-        if cached and now - cached.get("savedAt", 0) < RESULT_BOARD_CACHE_SECONDS:
-            return cached["payload"]
-    store = read_learning_store()
-    events = store.get("events") or {}
-    events_by_race = {
-        race: events.get(f"{date}-{venue}-{race}")
-        for race in range(1, 13)
-        if isinstance(events.get(f"{date}-{venue}-{race}"), dict)
-    }
-
     templates = result_board_strategy_templates()
     summary = {
         key: {
@@ -800,15 +807,26 @@ def build_result_board(date, jcd):
             "result": "",
             "hits": [],
         }
+        official = official_results.get(race) or {}
+        if official.get("available"):
+            official_result = official.get("result") or {}
+            row["result"] = normalize_ticket(official_result.get("result"))
         if not event:
+            if row["result"]:
+                row["status"] = "prediction-missing"
             rows.append(row)
             continue
+        # Only attach the outcome; never regenerate or replace the saved picks.
+        event = dict(event)
+        if official.get("available"):
+            same_result = normalize_ticket(event.get("result")) == row["result"]
+            event.update(result=official_result.get("result"), payout=official_result.get("payout"),
+                         payouts=official.get("payouts") or [],
+                         payout2t=event.get("payout2t", 0) if same_result else 0)
         result_key = normalize_ticket(event.get("result"))
         result2t_key = normalize_ticket((event.get("result") or [])[:2])
         payout3t = int(event.get("payout") or 0)
-        payout2t = int(event.get("payout2t") or 0)
-        if not payout2t:
-            payout2t = extract_payout_value(event.get("payouts"), "2連単", result2t_key)
+        payout2t = extract_payout_value(event.get("payouts"), "2連単", result2t_key) or int(event.get("payout2t") or 0)
         if not result_key or not payout3t:
             rows.append(row)
             continue
@@ -833,6 +851,11 @@ def build_result_board(date, jcd):
             ticket_key = normalize_ticket(pick.get("ticket"))
             if len(ticket_key.split("-")) == 2:
                 strategy_picks["nirentan"].append(ticket_key)
+
+        if not any(strategy_picks.values()):
+            row["status"] = "prediction-missing"
+            rows.append(row)
+            continue
 
         for key, tickets in strategy_picks.items():
             unique_tickets = list(dict.fromkeys(ticket for ticket in tickets if ticket))
@@ -881,11 +904,6 @@ def build_result_board(date, jcd):
         "summary": summary,
         "note": "保存済みの予測ログだけで集計しています。当選時は払戻を倍率換算して表示します。",
     }
-    with result_board_cache_lock:
-        result_board_cache[cache_key] = {
-            "savedAt": time.time(),
-            "payload": payload,
-        }
     return payload
 
 
@@ -2813,6 +2831,9 @@ def get_cached_result(date, jcd, race):
 
 
 def get_stored_result(date, jcd, race):
+    archived = RACE_ARCHIVE.get("result", date, jcd, race)
+    if archived:
+        return archived["payload"]
     cache_key = f"{date}-{jcd}"
     with results_cache_lock:
         cached = results_cache.get(cache_key)
@@ -2825,12 +2846,34 @@ def get_stored_results_for_venue(date, jcd):
     cache_key = f"{date}-{jcd}"
     with results_cache_lock:
         cached = results_cache.get(cache_key)
-    if not cached:
-        return {}
-    return dict((cached.get("payload") or {}).get("results", {}))
+        results = dict(((cached or {}).get("payload") or {}).get("results", {}))
+    results.update({str(race): payload for _, race, payload in RACE_ARCHIVE.list_records("result", date, jcd)})
+    return results
+
+
+def merge_official_result(previous, incoming):
+    if not previous or not previous.get("available"):
+        return incoming
+    if not incoming.get("available"):
+        return previous
+    if (previous.get("result") or {}).get("result") != (incoming.get("result") or {}).get("result"):
+        return incoming
+    merged = {**previous, **incoming}
+    if not is_weather_available(incoming.get("weather")):
+        merged["weather"] = previous.get("weather") or {"available": False}
+    payouts = {(row.get("type"), normalize_payout_ticket(row.get("ticket"))): row for row in previous.get("payouts", [])}
+    payouts.update({(row.get("type"), normalize_payout_ticket(row.get("ticket"))): row for row in incoming.get("payouts", [])})
+    merged["payouts"] = list(payouts.values())
+    return merged
 
 
 def store_result_payload(date, jcd, race, payload):
+    if payload.get("available"):
+        payload = RACE_ARCHIVE.put("result", date, jcd, race, payload, merge=merge_official_result)
+    else:
+        previous = get_stored_result(date, jcd, race)
+        if previous and previous.get("available"):
+            return
     cache_key = f"{date}-{jcd}"
     with results_cache_lock:
         cached = results_cache.get(cache_key, {}).get("payload", {})
@@ -3680,7 +3723,7 @@ def weather_fetch_once():
     total_races = 0
     attempted_this_tick = 0
     try:
-        venues_payload = load_venues_status(date)
+        venues_payload = load_venues_response(date) if ACQUISITION_ENABLED else load_venues_status(date)
     except Exception as error:
         with weather_fetch_lock:
             weather_fetch_state["date"] = date
@@ -3692,7 +3735,8 @@ def weather_fetch_once():
     )
     for jcd in active_jcds:
         try:
-            program = load_program(date, jcd, 1, should_prefetch=False, fast=True)
+            program = ((get_saved_program(date, jcd).get("payload") or {}) if ACQUISITION_ENABLED
+                       else load_program(date, jcd, 1, should_prefetch=False, fast=True))
         except Exception:
             continue
         for race_info in program.get("races") or []:
@@ -4366,6 +4410,9 @@ def refresh_pay_results_now(date, timeout=PAY_FETCH_TIMEOUT_SECONDS, force=False
 def schedule_pay_refresh(date):
     if date > current_jst_date():
         return
+    if ACQUISITION_ENABLED:
+        acquisition_queue.submit(("pay", date, "", 0), priority=1, interval=90)
+        return
     with pay_refresh_lock:
         if date in pay_refreshing_dates:
             return
@@ -4397,6 +4444,9 @@ def get_pay_refresh_status(date=None):
 
 def schedule_result_enrich(date, jcd, race, timeout=DETAIL_FETCH_TIMEOUT_SECONDS):
     if date > current_jst_date():
+        return
+    if ACQUISITION_ENABLED:
+        acquisition_queue.submit(("result", date, jcd, race), priority=2, interval=300)
         return
     key = f"{date}-{jcd}-{race}"
     with result_enrich_lock:
@@ -4442,6 +4492,9 @@ def get_cached_pay_results(date):
                 race_map[int(race_text)] = payload
         if race_map:
             grouped[jcd] = race_map
+    for jcd, race, payload in RACE_ARCHIVE.list_records("result", date):
+        if payload.get("available"):
+            grouped.setdefault(jcd, {})[race] = payload
     return grouped
 
 
@@ -4789,17 +4842,29 @@ def program_race(payload, race_number):
                  if race.get("race") == race_number and len(race.get("racers", [])) == 6), None)
 
 
+def get_saved_program(date, jcd):
+    archived = RACE_ARCHIVE.get("program", date, jcd)
+    if archived:
+        return archived
+    with program_cache_lock:
+        return program_cache.get(f"{date}-{jcd}") or {}
+
+
+def merge_program_records(previous, incoming):
+    merged = {race["race"]: race for race in (previous or {}).get("races", [])}
+    for race in incoming.get("races", []):
+        old = merged.get(race["race"], {})
+        if race.get("detailed") or not old.get("detailed"):
+            merged[race["race"]] = race
+    return {**incoming, "available": bool(merged), "races": [merged[number] for number in sorted(merged)]}
+
+
 def store_program_payload(date, jcd, races):
     # Merge by race so a detail-only fallback cannot erase the other eleven races.
+    previous = get_saved_program(date, jcd).get("payload") or {}
+    payload = merge_program_records(previous, {"date": date, "jcd": jcd, "races": races})
+    payload = RACE_ARCHIVE.put("program", date, jcd, 0, payload, merge=merge_program_records)
     with program_cache_lock:
-        previous = program_cache.get(f"{date}-{jcd}", {}).get("payload") or {}
-        merged = {race["race"]: race for race in previous.get("races", [])}
-        for race in races:
-            old = merged.get(race["race"], {})
-            if race.get("detailed") or not old.get("detailed"):
-                merged[race["race"]] = race
-        payload = {"date": date, "jcd": jcd, "available": bool(merged),
-                   "races": [merged[number] for number in sorted(merged)]}
         program_cache[f"{date}-{jcd}"] = {"savedAt": time.time(), "payload": payload}
         prune_saved_at_mapping(program_cache, PROGRAM_CACHE_MAX_ENTRIES)
     save_program_cache()
@@ -4872,12 +4937,12 @@ def schedule_program_refresh(date, jcd, race):
 
 def load_program_response(date, jcd, race, fast=False):
     # The HTTP thread never waits for the official site. All upstream work is bounded.
+    stored = get_saved_program(date, jcd)
     with program_cache_lock:
-        stored = program_cache.get(f"{date}-{jcd}") or {}
         cached = stored.get("payload") or {}
         age = time.time() - stored.get("savedAt", 0)
         selected = program_race(cached, race)
-        fresh = age < get_program_cache_seconds(date, cached)
+        fresh = date < current_jst_date() or age < get_program_cache_seconds(date, cached)
         payload = {**cached, "races": [{**item, "racers": [dict(r) for r in item.get("racers", [])]}
                                       for item in cached.get("races", [])]}
     if selected and selected.get("detailed") and fresh:
@@ -4902,8 +4967,8 @@ def load_program(date, jcd, selected_race, should_prefetch=True, fast=False, fet
     program_key = f"{date}-{jcd}"
     recent_payload = None
     stale_payload = None
+    stored = get_saved_program(date, jcd)
     with program_cache_lock:
-        stored = program_cache.get(program_key)
         if stored:
             stored_age = time.time() - stored.get("savedAt", 0)
             stale_payload = stored.get("payload")
@@ -5368,6 +5433,255 @@ def load_venues_status(date):
     return payload
 
 
+def archive_learning_events(events):
+    fields = ("date", "venue", "race", "source", "phase", "savedAt", "result", "payout",
+              "payout2t", "payouts", "picks", "exactaPicks")
+    for event in events:
+        if not isinstance(event, dict) or not valid_iso_date(event.get("date")):
+            continue
+        if event.get("venue") not in VENUE_NAMES:
+            continue
+        try:
+            race = int(event.get("race") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not 1 <= race <= 12:
+            continue
+        jcd = f"{VENUE_NAMES.index(event['venue']) + 1:02d}"
+        projected = {key: event[key] for key in fields if key in event}
+        RACE_ARCHIVE.put("event", event["date"], jcd, race, projected,
+                         merge=lambda old, new: old if old and str(old.get("savedAt") or "") > str(new.get("savedAt") or "") else new)
+        # Older cache limits may have evicted an official outcome that is still in the log.
+        ticket = normalize_ticket(event.get("result"))
+        try:
+            boats = [int(value) for value in ticket.split("-")]
+            payout = int(event.get("payout") or 0)
+            payout2t = int(event.get("payout2t") or 0)
+        except (TypeError, ValueError):
+            continue
+        if len(boats) == 3 and len(set(boats)) == 3 and all(1 <= boat <= 6 for boat in boats) and payout > 0:
+            payouts = list(event.get("payouts") or [])
+            if payout2t > 0 and not extract_payout_value(payouts, "2連単", normalize_ticket(boats[:2])):
+                payouts.append({"type": "2連単", "ticket": boats[:2], "payout": payout2t})
+            recovered = {"date": event["date"], "jcd": jcd, "race": race, "available": True,
+                         "result": {"result": boats, "payout": payout}, "payouts": payouts,
+                         "weather": {"available": False}, "source": "saved-learning-result"}
+            RACE_ARCHIVE.put("result", event["date"], jcd, race, recovered,
+                             merge=lambda old, new: merge_official_result(new, old) if old else new)
+
+
+def migrate_saved_races():
+    # One file at a time, on the worker. Never parse the full learning log in a public request.
+    if not RACE_ARCHIVE.get_meta("legacy-caches-v1"):
+        for kind, path in (("program", PROGRAM_CACHE_FILE), ("result", RESULTS_CACHE_FILE), ("venues", SCHEDULE_CACHE_FILE)):
+            try:
+                records = json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                continue
+            for key, record in records.items():
+                if not isinstance(record, dict):
+                    continue
+                payload = record.get("payload") or {}
+                date, jcd = key[:10], key[11:13]
+                if not valid_iso_date(date):
+                    continue
+                if kind == "venues":
+                    if not RACE_ARCHIVE.get(kind, date):
+                        RACE_ARCHIVE.put(kind, date, "", 0, payload, saved_at=record.get("savedAt", 0))
+                elif valid_jcd(jcd):
+                    if kind == "program" and not RACE_ARCHIVE.get(kind, date, jcd):
+                        RACE_ARCHIVE.put(kind, date, jcd, 0, payload, saved_at=record.get("savedAt", 0))
+                    elif kind == "result":
+                        for race, result in (payload.get("results") or {}).items():
+                            if str(race).isdigit() and 1 <= int(race) <= 12 and result.get("available"):
+                                if not RACE_ARCHIVE.get(kind, date, jcd, int(race)):
+                                    RACE_ARCHIVE.put(kind, date, jcd, int(race), result)
+            del records
+        RACE_ARCHIVE.set_meta("legacy-caches-v1", True)
+    try:
+        stat = LEARNING_FILE.stat()
+        signature = [stat.st_mtime_ns, stat.st_size]
+    except FileNotFoundError:
+        signature = None
+    if RACE_ARCHIVE.get_meta("learning-migration-v1") != signature or not RACE_ARCHIVE.get_meta("learning-summary"):
+        with learning_lock:
+            store = read_learning_store()
+            archive_learning_events((store.get("events") or {}).values())
+            RACE_ARCHIVE.set_meta("learning-summary", {
+                "updatedAt": store.get("updatedAt"), "weights": store.get("weights", {}),
+                "events": len(store.get("events") or {}),
+            })
+            RACE_ARCHIVE.set_meta("learning-migration-v1", signature)
+    RACE_ARCHIVE.set_meta("migration-completed-at", time.time())
+
+
+def saved_venue_status(date):
+    archived = RACE_ARCHIVE.get("venues", date)
+    if archived:
+        return archived
+    with venue_status_cache_lock:
+        return venue_status_cache.get(date) or {}
+
+
+def load_venues_response(date):
+    stored = saved_venue_status(date)
+    payload = stored.get("payload") or {}
+    active = any(status.get("available") for status in (payload.get("venues") or {}).values())
+    ttl = CACHE_SECONDS if active else 300
+    if not payload or not active or (date >= current_jst_date() and time.time() - stored.get("savedAt", 0) >= ttl):
+        acquisition_queue.submit(("venues", date, "", 0), priority=1, interval=300)
+    return {**payload, "date": date, "venues": payload.get("venues") or {},
+            "refreshing": not bool(payload), "source": payload.get("source", "saved-data-pending")}
+
+
+def race_result_due(date, jcd, race, now=None):
+    now = now or datetime.now(JST)
+    if date != now.date().isoformat():
+        return date < now.date().isoformat()
+    program = get_saved_program(date, jcd).get("payload") or {}
+    selected = next((item for item in program.get("races", []) if item.get("race") == race), {})
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", str(selected.get("cutoff") or ""))
+    if not match:
+        return False
+    hour, minute = map(int, match.groups())
+    if hour > 23 or minute > 59:
+        return False
+    return now >= now.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(minutes=5)
+
+
+def result_needs_detail(payload):
+    return not payload or not payload.get("available") or not has_payout_type(payload, "2連単") or not is_weather_available(payload.get("weather"))
+
+
+def load_result_response(date, jcd, race):
+    payload = get_stored_result(date, jcd, race)
+    due = race_result_due(date, jcd, race)
+    if payload and payload.get("available"):
+        if result_needs_detail(payload):
+            acquisition_queue.submit(("result", date, jcd, race), priority=2, interval=600)
+        return payload
+    if date <= current_jst_date():
+        acquisition_queue.submit(("pay", date, "", 0), priority=1, interval=90 if date == current_jst_date() else 900)
+        if due:
+            acquisition_queue.submit(("result", date, jcd, race), priority=2, interval=300)
+    return {"date": date, "jcd": jcd, "race": race, "available": False, "result": None,
+            "source": "pending-archive-refresh", "refreshing": due, "retryAfter": 5}
+
+
+def load_results_response(date, jcd, races=None):
+    results = {str(race): load_result_response(date, jcd, race) for race in normalize_race_list(races)}
+    return {"date": date, "jcd": jcd, "results": results,
+            "refreshing": any(row.get("refreshing") for row in results.values())}
+
+
+def rebuild_saved_board(date, jcd):
+    RACE_ARCHIVE.request_board(date, jcd)
+    revision = RACE_ARCHIVE.get_board(date, jcd)["revision"]
+    events = {race: payload for _, race, payload in RACE_ARCHIVE.list_records("event", date, jcd)}
+    results = {race: payload for _, race, payload in RACE_ARCHIVE.list_records("result", date, jcd)}
+    return RACE_ARCHIVE.put_board(date, jcd, compute_result_board(date, jcd, events, results), revision)
+
+
+def plan_acquisition(now=None):
+    now = now or datetime.now(JST)
+    today = now.date().isoformat()
+    night = ACQUISITION_NIGHT_START <= now.hour < ACQUISITION_NIGHT_END
+    targets = [today]
+    if now.hour >= 18:
+        targets.append((now.date() + timedelta(days=1)).isoformat())
+    if night:
+        targets.extend((now.date() - timedelta(days=days)).isoformat() for days in (1, 2))
+    for date in targets:
+        stored = saved_venue_status(date)
+        venues = (stored.get("payload") or {}).get("venues") or {}
+        active = [jcd for jcd, status in venues.items() if valid_jcd(jcd) and status.get("available")]
+        age = now.timestamp() - stored.get("savedAt", 0)
+        if not stored or (date >= today and age >= (CACHE_SECONDS if active else 300)):
+            acquisition_queue.submit(("venues", date, "", 0), priority=1 if date == today else 6, interval=300)
+        if date == today and 6 <= now.hour <= 23:
+            acquisition_queue.submit(("pay", date, "", 0), priority=1, interval=90)
+        for jcd in active:
+            program = get_saved_program(date, jcd).get("payload") or {}
+            records = {race: payload for _, race, payload in RACE_ARCHIVE.list_records("result", date, jcd)}
+            for race in range(1, 13):
+                selected = program_race(program, race)
+                if date >= today and (not selected or not selected.get("detailed")):
+                    acquisition_queue.submit(("program", date, jcd, race), priority=5 if date == today else 7, interval=600)
+                if date <= today and race_result_due(date, jcd, race, now) and result_needs_detail(records.get(race)):
+                    acquisition_queue.submit(("result" if date == today else "night-result", date, jcd, race),
+                                             priority=2 if date == today else 8, interval=900)
+
+
+def run_acquisition_job(kind, date, jcd, race):
+    if kind == "night-result":
+        if not ACQUISITION_NIGHT_START <= datetime.now(JST).hour < ACQUISITION_NIGHT_END:
+            return
+        kind = "result"
+    if kind == "board":
+        rebuild_saved_board(date, jcd)
+        return
+    if kind == "learning":
+        migrate_saved_races()
+        return
+    mark_worker_start("acquisition")
+    try:
+        if kind == "venues":
+            # A single daily index, not a 24-venue fanout on an upstream failure.
+            compact = date.replace("-", "")
+            html = fetch_html(f"/owpc/pc/race/index?hd={compact}", cache_seconds=300, timeout=18)
+            venues = parse_daily_venue_index(html, compact)
+            if not venues and "データはありません" not in html:
+                raise ValueError("開催場一覧を解析できませんでした（保存済み一覧は維持）")
+            payload = {"date": date, "venues": venues, "source": "daily-index", "version": SCHEDULE_CACHE_VERSION}
+            RACE_ARCHIVE.put("venues", date, "", 0, payload)
+            with venue_status_cache_lock:
+                venue_status_cache[date] = {"savedAt": time.time(), "payload": payload}
+            save_schedule_cache()
+        elif kind == "program":
+            # Skip jobs made redundant by a foreground request while queued.
+            selected = program_race(get_saved_program(date, jcd).get("payload"), race)
+            if not selected or not selected.get("detailed"):
+                payload = load_program(date, jcd, race, should_prefetch=False, fetch_timeout=18)
+                if not (program_race(payload, race) or {}).get("detailed"):
+                    raise ValueError("出走表詳細は未公開または取得できませんでした")
+        elif kind == "pay":
+            result = refresh_pay_results_now(date, timeout=18, reason="acquisition")
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error"))
+        elif kind == "result":
+            if result_needs_detail(get_stored_result(date, jcd, race)):
+                payload = fetch_raceresult_payload(date, jcd, race, timeout=18)
+                if not payload.get("available"):
+                    raise ValueError("公式結果は未公開または取得できませんでした")
+                store_result_payload(date, jcd, race, payload)
+        else:
+            raise ValueError(f"Unknown acquisition job: {kind}")
+    finally:
+        mark_worker_end("acquisition")
+
+
+def acquisition_worker(stop):
+    started_at = time.time()
+    acquisition_queue.submit(("learning", "", "", 0), priority=-1, interval=300)
+    last_plan = 0
+    while not stop.is_set():
+        try:
+            if time.monotonic() - last_plan >= 60:
+                if (RACE_ARCHIVE.get_meta("migration-completed-at") or 0) < started_at:
+                    acquisition_queue.submit(("learning", "", "", 0), priority=-1, interval=300)
+                if ACQUISITION_ENABLED:
+                    plan_acquisition()
+                last_plan = time.monotonic()
+            with program_refresh_lock:
+                foreground_busy = any(job["status"] == "fetching" for job in program_refresh_jobs.values())
+            acquisition_queue.run_one(run_acquisition_job, allow_network=ACQUISITION_ENABLED and not foreground_busy)
+            for date, jcd in RACE_ARCHIVE.dirty_boards(limit=8):
+                rebuild_saved_board(date, jcd)
+        except Exception as error:
+            print(f"[acquisition] worker error: {error}", flush=True)
+        stop.wait(1)
+
+
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -5552,6 +5866,10 @@ class AppHandler(SimpleHTTPRequestHandler):
             return self.send_json(get_racer_profile_status(registration=registration, lane=lane))
         if parsed.path == "/api/admin/weather-fetch-status":
             return self.send_json(get_weather_fetch_status())
+        if parsed.path == "/api/admin/acquisition-status":
+            return self.send_json({"enabled": ACQUISITION_ENABLED, **acquisition_queue.status(),
+                                   "saved": RACE_ARCHIVE.counts(),
+                                   "nightHoursJst": [ACQUISITION_NIGHT_START, ACQUISITION_NIGHT_END]})
         if parsed.path == "/api/admin/pay-refresh-status":
             query = parse_qs(parsed.query)
             date = query.get("date", [current_jst_date()])[0]
@@ -5614,7 +5932,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             return self.send_json({"error": "invalid parameters"}, 400)
         if parsed.path == "/api/venues":
             try:
-                return self.send_json(load_venues_status(date))
+                return self.send_json(load_venues_response(date))
             except Exception as error:
                 return self.send_json({"error": str(error)}, 502)
         if not valid_jcd(jcd):
@@ -5625,18 +5943,16 @@ class AppHandler(SimpleHTTPRequestHandler):
             return self.send_json({"error": "invalid parameters"}, 400)
         try:
             if parsed.path == "/api/result":
-                allow_live = date != current_jst_date()
-                self.send_json(load_result(date, jcd, int(race), include_weather=True, allow_live=allow_live))
+                self.send_json(load_result_response(date, jcd, int(race)))
             elif parsed.path == "/api/results":
                 requested_races = []
                 for value in query.get("races", []):
                     requested_races.extend(value.split(","))
                 if query.get("races") and not normalize_race_list(requested_races):
                     return self.send_json({"error": "invalid races"}, 400)
-                self.send_json(load_results(date, jcd, requested_races))
+                self.send_json(load_results_response(date, jcd, requested_races or None))
             elif parsed.path == "/api/signals":
-                fast = query.get("fast", ["0"])[0] == "1"
-                self.send_json(load_signals(date, jcd, int(race), fast=fast))
+                self.send_json(load_signals(date, jcd, int(race), fast=True))
             else:
                 fast = query.get("fast", ["0"])[0] == "1"
                 payload, status = load_program_response(date, jcd, int(race), fast=fast)
@@ -5746,6 +6062,7 @@ class AppHandler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    RACE_ARCHIVE.initialize()
     host = "0.0.0.0"
     port = int(os.environ.get("PORT", "4174"))
     server = BoundedThreadingHTTPServer((host, port), AppHandler)
@@ -5770,18 +6087,20 @@ if __name__ == "__main__":
     print(f"BOAT PREDICT AI: http://127.0.0.1:{port}/")
     print(f"SMARTPHONE URL: http://{local_ip}:{port}/")
     schedule_cache_flush_worker()
+    threading.Thread(target=acquisition_worker, args=(shutdown_requested,), daemon=True,
+                     name="race-acquisition").start()
     if os.environ.get("BOAT_HTML_CACHE_CLEANUP", "1") != "0":
         schedule_html_cache_cleanup_worker()
-    if os.environ.get("BOAT_STARTUP_WARMUP", "1") != "0":
+    if not ACQUISITION_ENABLED and os.environ.get("BOAT_STARTUP_WARMUP", "1") != "0":
         schedule_startup_warmup()
-    if os.environ.get("BOAT_RESULT_WARMER", "1") != "0":
+    if not ACQUISITION_ENABLED and os.environ.get("BOAT_RESULT_WARMER", "1") != "0":
         schedule_background_data_sync()
         schedule_result_warmer()
-    if os.environ.get("BOAT_PAY_WARMER", "1") != "0":
+    if not ACQUISITION_ENABLED and os.environ.get("BOAT_PAY_WARMER", "1") != "0":
         schedule_pay_warmer()
     if os.environ.get("BOAT_WEATHER_FETCHER", "1") != "0":
         schedule_weather_fetch_worker()
-    if os.environ.get("BOAT_AUTO_BACKFILL", "1") != "0":
+    if not ACQUISITION_ENABLED and os.environ.get("BOAT_AUTO_BACKFILL", "1") != "0":
         schedule_admin_auto_backfill()
     if os.environ.get("BOAT_RACER_PROFILE", "1") != "0":
         schedule_racer_profile_worker()

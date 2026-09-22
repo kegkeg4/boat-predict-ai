@@ -523,11 +523,17 @@ function invalidatePerformanceCache() {
 
 async function loadLearningWeights() {
   try {
-    const response = await fetchWithTimeout("/api/learning", { timeoutMs: 5000 });
-    if (!response.ok) throw new Error(`learning ${response.status}`);
-    const payload = await response.json();
+    let payload;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const response = await fetchWithTimeout("/api/learning", { timeoutMs: 5000 });
+      if (!response.ok) throw new Error(`learning ${response.status}`);
+      payload = await response.json();
+      if (!payload.refreshing) break;
+      if (attempt === 4) return;
+      await waitForProgramRetry(2000);
+    }
     learningWeights = payload.weights || {};
-    localStorage.setItem(LEARNING_WEIGHTS_KEY, JSON.stringify(learningWeights));
+    safeSetLocalStorage(LEARNING_WEIGHTS_KEY, JSON.stringify(learningWeights));
     invalidatePerformanceCache();
     if (currentData) {
       const updatedData = buildRaceData();
@@ -968,12 +974,18 @@ async function refreshVenueStatus(date = dateInput.value) {
     renderVenueOptions();
   }
   try {
-    const response = await fetchWithTimeout(`/api/venues?date=${encodeURIComponent(date)}`, { timeoutMs: 3500 });
-    if (!response.ok) throw new Error(`venues ${response.status}`);
-    const payload = await response.json();
-    venueStatusByDate[date] = payload.venues || {};
-    storeVenueStatus(date, venueStatusByDate[date]);
-    if (date === dateInput.value) renderVenueOptions();
+    for (let attempt = 0; attempt < 8 && date === dateInput.value; attempt++) {
+      const response = await fetchWithTimeout(`/api/venues?date=${encodeURIComponent(date)}`, { timeoutMs: 3500 });
+      if (!response.ok) throw new Error(`venues ${response.status}`);
+      const payload = await response.json();
+      if (!payload.refreshing) {
+        venueStatusByDate[date] = payload.venues || {};
+        storeVenueStatus(date, venueStatusByDate[date]);
+        if (date === dateInput.value) renderVenueOptions();
+        break;
+      }
+      if (attempt < 7) await waitForProgramRetry(3000);
+    }
   } catch (error) {
     if (error.name !== "AbortError" && error.name !== "TimeoutError") console.warn(error);
   }
@@ -1327,9 +1339,26 @@ function mergeResultWeather(race, weather) {
   };
 }
 
+async function fetchSavedResult(url, signal, programKey, consume) {
+  let payload;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (programKey !== getProgramKey()) return null;
+    const response = await fetchWithTimeout(url, { signal, timeoutMs: RESULT_TIMEOUT_MS });
+    if (!response.ok) throw new Error(`公式結果取得エラー: ${response.status}`);
+    payload = await response.json();
+    if (payload.error) throw new Error(payload.error);
+    if (programKey !== getProgramKey()) return null;
+    consume(payload);
+    if (!payload.refreshing || attempt === 5) return payload;
+    await waitForProgramRetry(4000, signal);
+  }
+  return payload;
+}
+
 async function loadOfficialResultForRace(race, signal) {
   if (!isRaceCompleted(race)) return null;
-  const key = `${getProgramKey()}-${race}`;
+  const programKey = getProgramKey();
+  const key = `${programKey}-${race}`;
   if (isValidOfficialResult(dynamicResults[key])) return dynamicResults[key];
   const unavailableAt = resultUnavailableCache[key];
   if (unavailableAt && Date.now() - unavailableAt < RESULT_UNAVAILABLE_CACHE_MS) return null;
@@ -1337,14 +1366,12 @@ async function loadOfficialResultForRace(race, signal) {
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
   resultRequestCache[key] = (async () => {
     try {
-      const response = await fetchWithTimeout(
+      let result = null;
+      await fetchSavedResult(
         `/api/result?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}&race=${race}`,
-        { signal, timeoutMs: RESULT_TIMEOUT_MS }
+        signal, programKey, (payload) => { result = applyOfficialResultPayload(race, payload, programKey); }
       );
-      if (!response.ok) throw new Error(`公式結果取得エラー: ${response.status}`);
-      const payload = await response.json();
-      if (payload.error) throw new Error(payload.error);
-      return applyOfficialResultPayload(race, payload);
+      return result;
     } finally {
       delete resultRequestCache[key];
     }
@@ -1352,7 +1379,8 @@ async function loadOfficialResultForRace(race, signal) {
   return resultRequestCache[key];
 }
 
-function applyOfficialResultPayload(race, payload) {
+function applyOfficialResultPayload(race, payload, programKey = getProgramKey()) {
+  if (programKey !== getProgramKey()) return null;
   if (!payload) return null;
   if (payload.error) return null;
   const key = `${getProgramKey()}-${race}`;
@@ -1368,27 +1396,31 @@ function applyOfficialResultPayload(race, payload) {
     renderManshuBanner();
     return payload.result;
   }
-  resultUnavailableCache[key] = Date.now();
+  // Pending archive work is not an upstream failure; do not suppress it for three minutes.
+  if (!payload.refreshing) resultUnavailableCache[key] = Date.now();
   return null;
 }
 
 async function loadOfficialResultsForDay(signal, races = []) {
+  const programKey = getProgramKey();
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
   const raceList = [...new Set(races.map(Number).filter((race) => race >= 1 && race <= 12))];
   const raceQuery = raceList.length ? `&races=${encodeURIComponent(raceList.join(","))}` : "";
-  const response = await fetchWithTimeout(
+  return fetchSavedResult(
     `/api/results?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}${raceQuery}`,
-    { signal, timeoutMs: RESULT_BATCH_TIMEOUT_MS }
-  );
-  if (!response.ok) throw new Error(`公式結果一括取得エラー: ${response.status}`);
-  const payload = await response.json();
-  Object.entries(payload.results || {}).forEach(([raceText, resultPayload]) => {
-    const race = Number(raceText);
-    if (Number.isInteger(race) && race >= 1 && race <= 12) {
-      applyOfficialResultPayload(race, resultPayload);
+    signal, programKey, (payload) => {
+      Object.entries(payload.results || {}).forEach(([raceText, resultPayload]) => {
+        const race = Number(raceText);
+        if (Number.isInteger(race) && race >= 1 && race <= 12) {
+          applyOfficialResultPayload(race, resultPayload, programKey);
+        }
+      });
+      if (currentData) {
+        updateRaceButtonStates();
+        renderOfficialResult(currentData);
+      }
     }
-  });
-  return payload;
+  );
 }
 
 function buildRaceData(race = selectedRace) {
@@ -2852,15 +2884,15 @@ function renderResultBoard(payload) {
   const races = document.querySelector("#resultBoardRaces");
   if (!status || !summary || !races) return;
   if (!payload || !payload.summary) {
-    status.textContent = "未集計";
+    status.textContent = payload?.refreshing ? "保存データを準備中" : "未集計";
     summary.innerHTML = "";
-    races.innerHTML = `<p class="performance-empty">予測ログが保存されると結果ボードを表示します。</p>`;
+    races.innerHTML = `<p class="performance-empty">${payload?.refreshing ? "保存データをバックグラウンドで集計しています。" : "予測ログが保存されると結果ボードを表示します。"}</p>`;
     return;
   }
   const items = ["honmei", "nerai", "ana", "nirentan"]
     .map((key) => ({ key, ...(payload.summary[key] || {}) }));
   const judged = items.reduce((max, item) => Math.max(max, Number(item.races) || 0), 0);
-  status.textContent = judged ? `${judged}R判定` : "未確定";
+  status.textContent = judged ? `${judged}R判定` : payload.races?.some((row) => row.result) ? "確定結果あり・予測未記録" : "未確定";
 	  summary.innerHTML = items.map((item) => `
 	    <article class="result-board-stat ${item.available === false ? "disabled" : item.key}">
 	      <small>${item.label || item.key}${item.points ? `${item.points}点` : ""}</small>
@@ -2888,9 +2920,10 @@ function renderResultBoard(payload) {
       `;
       }).join("");
     const confirmed = row.status === "confirmed";
+    const predictionMissing = row.status === "prediction-missing";
     const outcome = hits.length
       ? hitHtml
-      : `<div class="result-board-hit-line miss"><span><small>判定</small><b>${confirmed ? "不的中" : "未確定"}</b></span>${confirmed ? `<span><small>確定結果</small><b>${escapeHtml(row.result || "-")}</b></span>` : ""}</div>`;
+      : `<div class="result-board-hit-line miss"><span><small>判定</small><b>${predictionMissing ? "予測未記録" : confirmed ? "不的中" : "未確定"}</b></span>${confirmed || predictionMissing ? `<span><small>確定結果</small><b>${escapeHtml(row.result || "-")}</b></span>` : ""}</div>`;
     return `
       <article class="result-board-race ${hits.length ? "winner" : confirmed ? "loser" : "pending"}${rowTier ? ` high-payout ${rowTier}` : ""}">
         <div class="result-board-race-main">
@@ -2917,6 +2950,8 @@ function getResultBoardJudgedCount(payload) {
 }
 
 function getResultBoardCacheTtl(payload) {
+  if (payload?.refreshing) return 2000;
+  if (payload?.date === dateInput.value && payload.date === new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(new Date())) return RESULT_BOARD_CLIENT_CACHE_MS;
   return getResultBoardJudgedCount(payload) > 0
     ? RESULT_BOARD_CONFIRMED_CACHE_MS
     : RESULT_BOARD_PENDING_CACHE_MS;
@@ -2958,7 +2993,7 @@ async function loadResultBoard(options = {}) {
   const cached = memoryCached || storedCached;
   if (!force && cached) {
     renderResultBoard(cached.payload);
-    const ttl = memoryCached ? RESULT_BOARD_CLIENT_CACHE_MS : getResultBoardCacheTtl(cached.payload);
+    const ttl = Math.min(memoryCached ? RESULT_BOARD_CLIENT_CACHE_MS : Infinity, getResultBoardCacheTtl(cached.payload));
     if (Date.now() - cached.savedAt < ttl) return;
   }
   if (resultBoardInFlight) return;
@@ -2966,21 +3001,29 @@ async function loadResultBoard(options = {}) {
   const requestId = ++resultBoardRequestId;
   const jcd = String(Number(venueSelect.value) + 1).padStart(2, "0");
   status.textContent = "読込中";
+  const url = `/api/result-board?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}`;
   try {
-    const response = await fetchWithTimeout(
-      `/api/result-board?date=${encodeURIComponent(dateInput.value)}&jcd=${jcd}`,
-      { timeoutMs: 5000 }
-    );
-    const payload = await response.json();
-    if (requestId !== resultBoardRequestId) return;
-    resultBoardPayloadCache[cacheKey] = {
-      savedAt: Date.now(),
-      payload
-    };
-    writeStoredResultBoard(cacheKey, payload);
-    renderResultBoard(payload);
+    for (let attempt = 0; attempt < 6; attempt++) {
+      if (cacheKey !== getResultBoardCacheKey()) return;
+      const response = await fetchWithTimeout(url, { timeoutMs: 5000 });
+      if (!response.ok) throw new Error(`result-board ${response.status}`);
+      const payload = await response.json();
+      if (requestId !== resultBoardRequestId || cacheKey !== getResultBoardCacheKey()) return;
+      if (payload.summary || !cached?.payload?.summary) renderResultBoard(payload);
+      if (payload.summary) {
+        resultBoardPayloadCache[cacheKey] = { savedAt: Date.now(), payload };
+        writeStoredResultBoard(cacheKey, payload);
+      }
+      if (!payload.refreshing) break;
+      if (attempt < 5) await waitForProgramRetry(4000);
+    }
   } catch (error) {
-    if (requestId !== resultBoardRequestId) return;
+    if (requestId !== resultBoardRequestId || cacheKey !== getResultBoardCacheKey()) return;
+    if (cached?.payload?.summary) {
+      renderResultBoard(cached.payload);
+      status.textContent = "保存済みデータを表示中";
+      return;
+    }
     status.textContent = "取得失敗";
     renderResultBoard(null);
   } finally {
