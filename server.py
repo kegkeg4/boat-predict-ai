@@ -11,7 +11,7 @@ import signal
 import threading
 import time
 import socket
-from itertools import permutations
+from itertools import permutations, islice
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -103,6 +103,7 @@ ACQUISITION_ENABLED = os.environ.get("BOAT_ACQUISITION_WORKER", "1") != "0"
 ACQUISITION_NIGHT_START = 0
 ACQUISITION_NIGHT_END = 6
 acquisition_queue = AcquisitionQueue()
+archive_import_status = {"state": "pending", "phase": "startup", "rows": 0}
 PROGRAM_CACHE_FILE = CACHE_DIR / "programs.json"
 SCHEDULE_CACHE_FILE = CACHE_DIR / "schedules.json"
 RESULTS_CACHE_FILE = CACHE_DIR / "results.json"
@@ -3478,6 +3479,9 @@ def get_warmup_status():
     if status["date"]:
         status["completedRaces"] = count_cached_detailed_races(status["date"])
         status["checkedVenues"] = count_checked_venues(status["date"])
+    activity = acquisition_queue.status()
+    status["archive"] = {**archive_import_status, "queued": activity["queued"],
+                         "activeJob": activity["active"][0] if activity["active"] else None}
     return status
 
 
@@ -5470,49 +5474,77 @@ def archive_learning_events(events):
                              merge=lambda old, new: merge_official_result(new, old) if old else new)
 
 
+def archive_batches(items, size=100):
+    iterator = iter(items)
+    while batch := list(islice(iterator, size)):
+        yield batch
+
+
+def migrate_cache_record(kind, key, record):
+    if not isinstance(record, dict):
+        return
+    payload = record.get("payload") or {}
+    date, jcd = key[:10], key[11:13]
+    if not valid_iso_date(date):
+        return
+    if kind == "venues":
+        if not RACE_ARCHIVE.get(kind, date):
+            RACE_ARCHIVE.put(kind, date, "", 0, payload, saved_at=record.get("savedAt", 0))
+    elif valid_jcd(jcd):
+        if kind == "program" and not RACE_ARCHIVE.get(kind, date, jcd):
+            RACE_ARCHIVE.put(kind, date, jcd, 0, payload, saved_at=record.get("savedAt", 0))
+        elif kind == "result":
+            for race, result in (payload.get("results") or {}).items():
+                if str(race).isdigit() and 1 <= int(race) <= 12 and result.get("available"):
+                    if not RACE_ARCHIVE.get(kind, date, jcd, int(race)):
+                        RACE_ARCHIVE.put(kind, date, jcd, int(race), result)
+
+
 def migrate_saved_races():
     # One file at a time, on the worker. Never parse the full learning log in a public request.
     if not RACE_ARCHIVE.get_meta("legacy-caches-v1"):
+        cache_import_ok = True
         for kind, path in (("program", PROGRAM_CACHE_FILE), ("result", RESULTS_CACHE_FILE), ("venues", SCHEDULE_CACHE_FILE)):
+            archive_import_status.update(state="importing", phase=kind, rows=0)
+            print(f"[archive-import] start {kind}", flush=True)
             try:
                 records = json.loads(path.read_text(encoding="utf-8"))
             except FileNotFoundError:
                 continue
-            for key, record in records.items():
-                if not isinstance(record, dict):
-                    continue
-                payload = record.get("payload") or {}
-                date, jcd = key[:10], key[11:13]
-                if not valid_iso_date(date):
-                    continue
-                if kind == "venues":
-                    if not RACE_ARCHIVE.get(kind, date):
-                        RACE_ARCHIVE.put(kind, date, "", 0, payload, saved_at=record.get("savedAt", 0))
-                elif valid_jcd(jcd):
-                    if kind == "program" and not RACE_ARCHIVE.get(kind, date, jcd):
-                        RACE_ARCHIVE.put(kind, date, jcd, 0, payload, saved_at=record.get("savedAt", 0))
-                    elif kind == "result":
-                        for race, result in (payload.get("results") or {}).items():
-                            if str(race).isdigit() and 1 <= int(race) <= 12 and result.get("available"):
-                                if not RACE_ARCHIVE.get(kind, date, jcd, int(race)):
-                                    RACE_ARCHIVE.put(kind, date, jcd, int(race), result)
+            except (OSError, json.JSONDecodeError) as error:
+                cache_import_ok = False
+                print(f"[archive-import] {kind} cache unreadable: {error}", flush=True)
+                continue
+            for batch in archive_batches(records.items()):
+                with RACE_ARCHIVE.batch():
+                    for key, record in batch:
+                        migrate_cache_record(kind, key, record)
+                archive_import_status["rows"] += len(batch)
             del records
-        RACE_ARCHIVE.set_meta("legacy-caches-v1", True)
+            print(f"[archive-import] done {kind}: {archive_import_status['rows']}", flush=True)
+        if cache_import_ok:
+            RACE_ARCHIVE.set_meta("legacy-caches-v1", True)
     try:
         stat = LEARNING_FILE.stat()
         signature = [stat.st_mtime_ns, stat.st_size]
     except FileNotFoundError:
         signature = None
     if RACE_ARCHIVE.get_meta("learning-migration-v1") != signature or not RACE_ARCHIVE.get_meta("learning-summary"):
+        archive_import_status.update(state="importing", phase="learning", rows=0)
         with learning_lock:
             store = read_learning_store()
-            archive_learning_events((store.get("events") or {}).values())
             RACE_ARCHIVE.set_meta("learning-summary", {
                 "updatedAt": store.get("updatedAt"), "weights": store.get("weights", {}),
                 "events": len(store.get("events") or {}),
             })
+            for batch in archive_batches((store.get("events") or {}).values()):
+                with RACE_ARCHIVE.batch():
+                    archive_learning_events(batch)
+                archive_import_status["rows"] += len(batch)
             RACE_ARCHIVE.set_meta("learning-migration-v1", signature)
     RACE_ARCHIVE.set_meta("migration-completed-at", time.time())
+    archive_import_status.update(state="ready", phase="complete")
+    print("[archive-import] complete", flush=True)
 
 
 def saved_venue_status(date):
@@ -5607,7 +5639,8 @@ def plan_acquisition(now=None):
                 selected = program_race(program, race)
                 if date >= today and (not selected or not selected.get("detailed")):
                     acquisition_queue.submit(("program", date, jcd, race), priority=5 if date == today else 7, interval=600)
-                if date <= today and race_result_due(date, jcd, race, now) and result_needs_detail(records.get(race)):
+                completed = (records.get(race) or {}).get("available") or race_result_due(date, jcd, race, now)
+                if date <= today and completed and result_needs_detail(records.get(race)):
                     acquisition_queue.submit(("result" if date == today else "night-result", date, jcd, race),
                                              priority=2 if date == today else 8, interval=900)
 

@@ -1,6 +1,6 @@
 """Small, durable race records; independent of the bounded in-memory caches."""
 
-from contextlib import closing
+from contextlib import closing, contextmanager
 import json
 from pathlib import Path
 import sqlite3
@@ -13,6 +13,7 @@ class RaceArchive:
         self.path = Path(path).resolve()
         self._init_lock = threading.Lock()
         self._initialized = False
+        self._local = threading.local()
 
     def initialize(self):
         with self._init_lock:
@@ -40,11 +41,36 @@ class RaceArchive:
             self._initialized = True
 
     def _read(self, query, args=()):
+        if getattr(self._local, "db", None) is not None:
+            return self._local.db.execute(query, args).fetchall()
         if not self.path.exists():
             return []
         # Readers do not create a database or wait behind a large batch write.
         with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=.1)) as db:
             return db.execute(query, args).fetchall()
+
+    @contextmanager
+    def _write(self):
+        self.initialize()
+        if getattr(self._local, "db", None) is not None:
+            yield self._local.db
+            return
+        with closing(sqlite3.connect(self.path, timeout=2)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            yield db
+
+    @contextmanager
+    def batch(self):
+        # Bounded migration chunks share one commit; HTTP readers keep using WAL snapshots.
+        if getattr(self._local, "db", None) is not None:
+            yield
+            return
+        with self._write() as db:
+            self._local.db = db
+            try:
+                yield
+            finally:
+                del self._local.db
 
     def get(self, kind, date, jcd="", race=0):
         rows = self._read("SELECT payload,saved_at FROM records WHERE kind=? AND date=? AND jcd=? AND race=?",
@@ -60,9 +86,7 @@ class RaceArchive:
         return [(venue, race, json.loads(payload)) for venue, race, payload in self._read(query, args)]
 
     def put(self, kind, date, jcd, race, payload, merge=None, saved_at=None):
-        self.initialize()
-        with closing(sqlite3.connect(self.path, timeout=2)) as db, db:
-            db.execute("BEGIN IMMEDIATE")
+        with self._write() as db:
             row = db.execute("SELECT payload FROM records WHERE kind=? AND date=? AND jcd=? AND race=?",
                              (kind, date, jcd, race)).fetchone()
             previous = json.loads(row[0]) if row else None
@@ -90,14 +114,12 @@ class RaceArchive:
         return self._read("SELECT date,jcd FROM boards WHERE revision!=built_revision ORDER BY saved_at LIMIT ?", (limit,))
 
     def request_board(self, date, jcd):
-        self.initialize()
-        with closing(sqlite3.connect(self.path, timeout=2)) as db, db:
+        with self._write() as db:
             db.execute("INSERT OR IGNORE INTO boards(date,jcd) VALUES(?,?)", (date, jcd))
 
     def put_board(self, date, jcd, payload, revision):
-        self.initialize()
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-        with closing(sqlite3.connect(self.path, timeout=2)) as db, db:
+        with self._write() as db:
             cursor = db.execute("UPDATE boards SET payload=?,built_revision=?,saved_at=? "
                                 "WHERE date=? AND jcd=? AND revision=?",
                                 (encoded, revision, time.time(), date, jcd, revision))
@@ -108,8 +130,7 @@ class RaceArchive:
         return json.loads(rows[0][0]) if rows else None
 
     def set_meta(self, key, value):
-        self.initialize()
-        with closing(sqlite3.connect(self.path, timeout=2)) as db, db:
+        with self._write() as db:
             db.execute("INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (key, json.dumps(value, ensure_ascii=False)))
 
